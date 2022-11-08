@@ -1,0 +1,38 @@
+[package]
+name = "gcproxy"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.13"
+bytes = "1"
+futures = "0.3"
+h2 = "0.3"
+native-tls = "0.2"
+openssl = "0.10"
+reqwest = "0.11"
+tokio-native-tls = "0.3"
+
+[dependencies.hyper]
+version = "0.14"
+features = ["http1", "http2", "server", "stream", "runtime"]
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+features = ["preserve_order"]
+
+[dependencies.tokio]
+version = "1"
+features = ["net", "rt", "rt-multi-thread", "time"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["macros"]
