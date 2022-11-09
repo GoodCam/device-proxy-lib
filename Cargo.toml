@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[features]
+default = []
+c-api = ["libc"]
+
 [dependencies]
 async-trait = "0.1"
 base64 = "0.13"
@@ -20,6 +24,10 @@ tokio-native-tls = "0.3"
 [dependencies.hyper]
 version = "0.14"
 features = ["http1", "http2", "server", "stream", "runtime"]
+
+[dependencies.libc]
+version = "0.2"
+optional = true
 
 [dependencies.serde]
 version = "1"

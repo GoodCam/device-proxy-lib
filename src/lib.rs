@@ -5,6 +5,9 @@ mod error;
 mod response;
 mod tls;
 
+#[cfg(feature = "c-api")]
+mod exports;
+
 pub mod auth;
 
 use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};

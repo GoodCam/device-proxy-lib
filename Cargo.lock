@@ -218,6 +218,7 @@ dependencies = [
  "futures",
  "h2",
  "hyper",
+ "libc",
  "native-tls",
  "openssl",
  "reqwest",
