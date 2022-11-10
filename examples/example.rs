@@ -63,9 +63,12 @@ async fn main() {
         .https_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8443)))
         .lets_encrypt();
 
-    builder.build_async(MyRequestHandler).serve().await.unwrap();
-
-    futures::future::pending::<()>().await;
+    builder
+        .build(MyRequestHandler)
+        .await
+        .unwrap()
+        .await
+        .unwrap();
 }
 
 /// Create an empty HTTP response with a given status code.

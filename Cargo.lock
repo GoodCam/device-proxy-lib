@@ -219,6 +219,7 @@ dependencies = [
  "h2",
  "hyper",
  "libc",
+ "log",
  "native-tls",
  "openssl",
  "reqwest",

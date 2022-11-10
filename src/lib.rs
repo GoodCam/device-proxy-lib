@@ -4,23 +4,31 @@ mod device;
 mod error;
 mod response;
 mod tls;
+mod utils;
 
 #[cfg(feature = "c-api")]
 mod exports;
 
 pub mod auth;
 
-use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use futures::{
-    channel::oneshot::{self, Sender},
-    future::Either,
-    StreamExt,
+    channel::mpsc::{self, UnboundedSender},
+    future::AbortHandle,
+    FutureExt, StreamExt,
 };
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, Version};
 use native_tls::Identity;
-use tokio::task::JoinHandle;
 
 pub use hyper;
 
@@ -30,6 +38,7 @@ use self::{
     device::{DeviceConnection, DeviceManager},
     error::{BadGateway, HttpError, Unauthorized},
     tls::TlsMode,
+    utils::AbortOnDrop,
 };
 
 pub use self::{binding::ConnectionInfo, error::Error};
@@ -212,54 +221,10 @@ impl ProxyBuilder {
     }
 
     ///
-    pub fn build<T>(self, request_handler: T) -> Proxy<RequestHandlerAdapter<T>>
-    where
-        T: BlockingRequestHandler + Send + Sync + 'static,
-    {
-        self.build_async(RequestHandlerAdapter::from(request_handler))
-    }
-
-    ///
-    pub fn build_async<T>(self, request_handler: T) -> Proxy<T>
+    pub async fn build<T>(self, request_handler: T) -> Result<Proxy, Error>
     where
         T: RequestHandler + Send + Sync + 'static,
     {
-        Proxy {
-            hostname: self.hostname,
-            http_bind_addresses: self.http_bind_addresses,
-            https_bind_addresses: self.https_bind_addresses,
-            tls_mode: self.tls_mode,
-            handler: request_handler,
-        }
-    }
-}
-
-impl Default for ProxyBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-///
-pub struct Proxy<T> {
-    hostname: String,
-    http_bind_addresses: Vec<SocketAddr>,
-    https_bind_addresses: Vec<SocketAddr>,
-    tls_mode: TlsMode,
-    handler: T,
-}
-
-impl<T> Proxy<T>
-where
-    T: RequestHandler + Send + Sync + 'static,
-{
-    ///
-    pub fn builder() -> ProxyBuilder {
-        ProxyBuilder::new()
-    }
-
-    ///
-    pub async fn serve(self) -> Result<ProxyHandle, Error> {
         let acme_challenges = acme::ChallengeRegistrations::new();
 
         let acme_account = self.tls_mode.create_acme_account().await?;
@@ -283,7 +248,7 @@ where
         let handler = InternalRequestHandler {
             acme_challenges,
             devices: DeviceManager::new(),
-            handler: self.handler.into(),
+            handler: request_handler.into(),
         };
 
         let mut bindings = Bindings::new();
@@ -318,7 +283,7 @@ where
             futures::future::ok::<_, hyper::Error>(service)
         });
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded();
 
         let server = Server::builder(incoming)
             .http1_keepalive(true)
@@ -326,83 +291,98 @@ where
             .http2_keep_alive_timeout(Duration::from_secs(20))
             .serve(make_service)
             .with_graceful_shutdown(async move {
-                if shutdown_rx.await.is_err() {
+                if shutdown_rx.next().await.is_none() {
                     futures::future::pending().await
                 }
             });
 
-        let server = tokio::spawn(server);
+        let (server, server_handle) = futures::future::abortable(server);
+
+        let server = AbortOnDrop::from(tokio::spawn(server));
 
         let watchdog = if let Some(watchdog) = acme_watchdog {
-            tokio::spawn(watchdog.watch())
+            AbortOnDrop::from(tokio::spawn(watchdog.watch()))
         } else {
-            tokio::spawn(futures::future::pending())
+            AbortOnDrop::from(tokio::spawn(futures::future::pending()))
         };
 
-        // TODO: aborting this task won't abort the proxy and the watchdog
-        let task = tokio::spawn(async move {
-            let res = server.await;
+        let join = async move {
+            let res = match server.await {
+                Ok(Ok(Ok(()))) => Ok(()),
+                Ok(Ok(Err(err))) => Err(err.into()),
+                Ok(Err(_)) => Ok(()),
+                Err(_) => Ok(()),
+            };
 
             watchdog.abort();
 
             let _ = watchdog.await;
 
-            match res {
-                Ok(res) => res,
-                Err(_) => Ok(()),
-            }
-        });
+            res
+        };
 
-        let handle = ProxyHandle { shutdown_tx, task };
+        let handle = ProxyHandle {
+            shutdown: shutdown_tx,
+            abort: server_handle,
+        };
 
-        Ok(handle)
+        let proxy = Proxy {
+            join: Box::pin(join),
+            handle,
+        };
+
+        Ok(proxy)
+    }
+}
+
+impl Default for ProxyBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 ///
+pub struct Proxy {
+    join: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
+    handle: ProxyHandle,
+}
+
+impl Proxy {
+    ///
+    pub fn builder() -> ProxyBuilder {
+        ProxyBuilder::new()
+    }
+
+    ///
+    pub fn handle(&self) -> ProxyHandle {
+        self.handle.clone()
+    }
+}
+
+impl Future for Proxy {
+    type Output = Result<(), Error>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.join.poll_unpin(cx)
+    }
+}
+
+///
+#[derive(Clone)]
 pub struct ProxyHandle {
-    shutdown_tx: Sender<()>,
-    task: JoinHandle<Result<(), hyper::Error>>,
+    shutdown: UnboundedSender<()>,
+    abort: AbortHandle,
 }
 
 impl ProxyHandle {
     ///
-    pub async fn stop(self, timeout: Duration) -> Result<(), Error> {
-        let _ = self.shutdown_tx.send(());
-
-        let delay = tokio::time::sleep(timeout);
-
-        let task = self.task;
-
-        futures::pin_mut!(delay);
-        futures::pin_mut!(task);
-
-        let select = futures::future::select(delay, task);
-
-        match select.await {
-            Either::Left((_, task)) => {
-                // abort the task
-                task.abort();
-
-                // and wait until it stops
-                let _ = task.await;
-
-                Err(Error::from_static_msg("timeout"))
-            }
-            Either::Right((res, _)) => match res {
-                Ok(res) => res.map_err(Error::from),
-                Err(_) => Err(Error::from_static_msg("terminating")),
-            },
-        }
+    pub fn stop(&self) {
+        let _ = self.shutdown.unbounded_send(());
     }
 
     ///
-    pub async fn abort(self) {
-        // abort the task
-        self.task.abort();
-
-        // and wait until it stops
-        let _ = self.task.await;
+    pub fn abort(&self) {
+        self.abort.abort();
     }
 }
 
