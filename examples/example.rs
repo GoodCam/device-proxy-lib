@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use async_trait::async_trait;
-use gcproxy::{
+use gc_device_proxy::{
     auth::BasicAuthorization,
     hyper::{Body, Request, Response},
     ClientHandlerResult, ConnectionInfo, DeviceHandlerResult, Error, ProxyBuilder, RequestHandler,

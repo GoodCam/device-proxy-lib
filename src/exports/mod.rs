@@ -21,6 +21,24 @@ static LAST_ERROR: Mutex<(c_int, Option<Cow<'static, str>>)> = Mutex::new((0, No
 
 ///
 #[no_mangle]
+extern "C" fn gcdp__version__major() -> c_int {
+    env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap()
+}
+
+///
+#[no_mangle]
+extern "C" fn gcdp__version__minor() -> c_int {
+    env!("CARGO_PKG_VERSION_MINOR").parse().unwrap()
+}
+
+///
+#[no_mangle]
+extern "C" fn gcdp__version__micro() -> c_int {
+    env!("CARGO_PKG_VERSION_PATCH").parse().unwrap()
+}
+
+///
+#[no_mangle]
 extern "C" fn gcdp_get_last_error(buffer: *mut c_char, size: *mut usize) -> c_int {
     let err = LAST_ERROR.lock().unwrap();
 
@@ -95,7 +113,7 @@ unsafe fn bstr_to_cstr(s: &[u8], buffer: *mut c_char, size: usize) -> usize {
 
     dst.copy_from_slice(src);
 
-    dst[copy] = 0;
+    buffer[copy] = 0;
 
     s.len()
 }
