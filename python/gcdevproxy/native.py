@@ -55,7 +55,7 @@ class DeviceProxyLib:
     Loader for the device proxy lib.
     """
 
-    lib_name = 'gc_device_proxy'
+    lib_name = 'gcdevproxy'
 
     min_version = (0, 1, 0)
 

@@ -1,4 +1,4 @@
-from gc_device_proxy import (
+from gcdevproxy import (
     AcceptDevice,
     Authorization,
     BlockRequest,

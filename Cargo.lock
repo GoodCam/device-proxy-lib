@@ -209,7 +209,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gc-device-proxy"
+name = "gcdevproxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
