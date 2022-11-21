@@ -1,4 +1,6 @@
+import asyncio
 import ctypes
+import inspect
 import time
 
 from ctypes import POINTER, c_char_p, c_uint8, c_void_p, pointer, py_object
@@ -20,8 +22,15 @@ def handle_device_request(context: c_void_p, authorization: c_void_p, result: c_
     authorization = Authorization(authorization)
     result = NativeDeviceHandlerResult(result)
 
-    handler: RequestHandler = context.contents.value
+    handler = context.contents.value
 
+    if inspect.iscoroutinefunction(handler.handle_device_request):
+        handle_device_request_async(handler, authorization, result)
+    else:
+        handle_device_request_blocking(handler, authorization, result)
+
+
+def handle_device_request_blocking(handler, authorization, result):
     try:
         r = handler.handle_device_request(authorization)
     except Exception as ex:
@@ -30,19 +39,50 @@ def handle_device_request(context: c_void_p, authorization: c_void_p, result: c_
         r.update_native(result)
 
 
+def handle_device_request_async(handler, authorization, result):
+    async def handle():
+        try:
+            r = await handler.handle_device_request(authorization)
+        except Exception as ex:
+            result.error(str(ex))
+        else:
+            r.update_native(result)
+
+    handler.loop.call_soon_threadsafe(lambda: asyncio.create_task(handle()))
+
+
 def handle_client_request(context: c_void_p, request: c_void_p, result: c_void_p):
     context = ctypes.cast(context, POINTER(py_object))
     request = Request(request)
     result = NativeClientHandlerResult(result)
 
-    handler: RequestHandler = context.contents.value
+    handler = context.contents.value
 
+    if inspect.iscoroutinefunction(handler.handle_client_request):
+        handle_client_request_async(handler, request, result)
+    else:
+        handle_client_request_blocking(handler, request, result)
+
+
+def handle_client_request_blocking(handler, request, result):
     try:
         r = handler.handle_client_request(request)
     except Exception as ex:
         result.error(str(ex))
     else:
         r.update_native(result)
+
+
+def handle_client_request_async(handler, request, result):
+    async def handle():
+        try:
+            r = await handler.handle_client_request(request)
+        except Exception as ex:
+            result.error(str(ex))
+        else:
+            r.update_native(result)
+
+    handler.loop.call_soon_threadsafe(lambda: asyncio.create_task(handle()))
 
 
 class NativeDeviceHandlerResult(NativeObject):
@@ -56,10 +96,10 @@ class NativeDeviceHandlerResult(NativeObject):
         self.call_method(lib.gcdp__device_handler_result__unauthorized)
 
     def redirect(self, location: str) -> None:
-        self.call_method(lib.gcdp__device_handler_result__redirect, location)
+        self.call_method(lib.gcdp__device_handler_result__redirect, location.encode('utf-8'))
 
     def error(self, error: str) -> None:
-        self.call_method(lib.gcdp__device_handler_result__error, error)
+        self.call_method(lib.gcdp__device_handler_result__error, error.encode('utf-8'))
 
 
 class DeviceHandlerResult:
@@ -112,7 +152,7 @@ class NativeClientHandlerResult(NativeObject):
         r.forget()
 
     def error(self, error: str) -> None:
-        self.call_method(lib.gcdp__client_handler_result__error, error)
+        self.call_method(lib.gcdp__client_handler_result__error, error.encode('utf-8'))
 
 
 class ClientHandlerResult:
@@ -138,12 +178,7 @@ class BlockRequest(ClientHandlerResult):
 
 
 class NativeProxyConfig(NativeObject):
-    def __init__(self) -> None:
-        raw_ptr = lib.gcdp__proxy_config__new()
-
-        if raw_ptr is None:
-            raise MemoryError("unable to allocate a proxy config")
-
+    def __init__(self, raw_ptr: c_void_p) -> None:
         super().__init__(raw_ptr, lib.gcdp__proxy_config__free)
 
         self.device_request_handler = None
@@ -215,7 +250,12 @@ class ProxyConfig:
         self.https_bindings = []
 
     def to_native(self) -> NativeProxyConfig:
-        config = NativeProxyConfig()
+        raw_ptr = lib.gcdp__proxy_config__new()
+
+        if raw_ptr is None:
+            raise MemoryError("unable to allocate a proxy config")
+
+        config = NativeProxyConfig(raw_ptr)
 
         config.set_device_request_handler(handle_device_request, self.request_handler)
         config.set_client_request_handler(handle_client_request, self.request_handler)
@@ -236,30 +276,36 @@ class ProxyConfig:
         return config
 
 
-class Proxy(NativeObject):
-    def __init__(self, config: ProxyConfig) -> None:
-        config = config.to_native()
+class NativeProxy(NativeObject):
+    def __init__(self, raw_ptr: c_void_p) -> None:
+        super().__init__(raw_ptr, lib.gcdp__proxy__free)
 
-        raw_ptr = lib.gcdp__proxy__new(config.raw_ptr)
 
-        if not raw_ptr:
-            raise Exception(lib.get_last_error())
-
-        super().__init__(raw_ptr, lib.gcdp__proxy__abort)
-
-        # prevent the callbacks and contexts from being garbage collected
-        self.device_request_handler = config.device_request_handler
-        self.device_request_context = config.device_request_context
-        self.client_request_handler = config.client_request_handler
-        self.client_request_context = config.client_request_context
-
+class Proxy(NativeProxy):
     def run(self) -> None:
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+        while True:
+            time.sleep(1)
 
     def stop(self, timeout: float) -> None:
         self.call_method(lib.gcdp__proxy__stop, int(timeout * 1000))
-        self.forget()
+        if self.call_method(lib.gcdp__proxy__join) != 0:
+            raise Exception(lib.get_last_error())
+
+
+def create_proxy(config: ProxyConfig) -> 'Proxy':
+    config = config.to_native()
+
+    raw_ptr = lib.gcdp__proxy__new(config.raw_ptr)
+
+    if not raw_ptr:
+        raise Exception(lib.get_last_error())
+
+    proxy = Proxy(raw_ptr)
+
+    # prevent the callbacks and contexts from being garbage collected
+    proxy.device_request_handler = config.device_request_handler
+    proxy.device_request_context = config.device_request_context
+    proxy.client_request_handler = config.client_request_handler
+    proxy.client_request_context = config.client_request_context
+
+    return proxy

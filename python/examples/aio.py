@@ -1,3 +1,9 @@
+import asyncio
+import gcdevproxy.aio
+import logging
+import sys
+
+from gcdevproxy.aio import RequestHandler
 from gcdevproxy import (
     AcceptDevice,
     Authorization,
@@ -5,16 +11,14 @@ from gcdevproxy import (
     ClientHandlerResult,
     DeviceHandlerResult,
     ForwardRequest,
-    Proxy,
     ProxyConfig,
     Request,
-    RequestHandler,
     Response,
 )
 
 
 class MyRequestHandler(RequestHandler):
-    def handle_device_request(self, authorization: Authorization) -> 'DeviceHandlerResult':
+    async def handle_device_request(self, authorization: Authorization) -> 'DeviceHandlerResult':
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         # !!! Accepting all devices is a potential security risk. Never do  !!!
         # !!! this in production! You should always check the device ID and !!!
@@ -22,7 +26,7 @@ class MyRequestHandler(RequestHandler):
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         return AcceptDevice()
 
-    def handle_client_request(self, request: Request) -> 'ClientHandlerResult':
+    async def handle_client_request(self, request: Request) -> 'ClientHandlerResult':
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         # !!! Allowing clients to communicate with an arbitrary device is a !!!
         # !!! potential security risk. Never do this in production! You     !!!
@@ -39,7 +43,14 @@ class MyRequestHandler(RequestHandler):
             return ForwardRequest(device_id, request)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    logging.basicConfig(
+        format='%(asctime)s.%(msecs)d %(levelname)s %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        level=logging.INFO,
+        stream=sys.stderr,
+    )
+
     config = ProxyConfig()
     config.hostname = 'my-goodcam-proxy.com'
     config.http_bindings = [('0.0.0.0', 8080)]
@@ -47,6 +58,15 @@ if __name__ == "__main__":
     #config.lets_encrypt = True
     config.request_handler = MyRequestHandler()
 
-    proxy = Proxy(config)
+    loop = asyncio.new_event_loop()
 
-    proxy.run()
+    proxy = loop.run_until_complete(gcdevproxy.aio.create_proxy(config))
+
+    try:
+        loop.run_until_complete(proxy.run())
+    except KeyboardInterrupt:
+        # tell the proxy to stop
+        proxy.stop(10)
+
+        # and wait until it does
+        loop.run_until_complete(proxy.run())

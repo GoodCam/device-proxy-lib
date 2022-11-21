@@ -36,6 +36,7 @@ class NativeRequest(NativeObject):
 
     @property
     def headers(self) -> List[Tuple[str, str]]:
+        assert self.raw_ptr is not None
         res = []
         it = self.call_method(lib.gcdp__request__get_header_iter)
         while it is not None:
@@ -70,15 +71,7 @@ class Request:
 
 
 class NativeResponse(NativeObject):
-    def __init__(self, status_code: int) -> None:
-        if not (100 <= status_code < 600):
-            raise Exception("invalid status code")
-
-        raw_ptr = lib.gcdp__response__new(status_code)
-
-        if not raw_ptr:
-            raise MemoryError("unable to allocate a new response")
-
+    def __init__(self, raw_ptr: c_void_p) -> None:
         super().__init__(raw_ptr, lib.gcdp__response__free)
 
     def append_header(self, name: str, value: str) -> None:
@@ -111,7 +104,15 @@ class Response:
         self.headers[name.lower()] = [value]
 
     def to_native(self) -> NativeResponse:
-        response = NativeResponse(self.status_code)
+        if not (100 <= self.status_code < 600):
+            raise Exception("invalid status code")
+
+        raw_ptr = lib.gcdp__response__new(self.status_code)
+
+        if not raw_ptr:
+            raise MemoryError("unable to allocate a new response")
+
+        response = NativeResponse(raw_ptr)
 
         for name, values in self.headers:
             for value in values:

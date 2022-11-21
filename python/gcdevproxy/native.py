@@ -65,7 +65,18 @@ class DeviceProxyLib:
     LOG_LEVEL_WARN = 3
     LOG_LEVEL_ERROR = 4
 
+    log_level_map = {
+        LOG_LEVEL_TRACE: logging.DEBUG,
+        LOG_LEVEL_DEBUG: logging.DEBUG,
+        LOG_LEVEL_INFO: logging.INFO,
+        LOG_LEVEL_WARN: logging.WARNING,
+        LOG_LEVEL_ERROR: logging.ERROR,
+    }
+
     LOG_CALLBACK = CFUNCTYPE(None, c_void_p, c_void_p)
+
+    NEW_PROXY_CALLBACK = CFUNCTYPE(None, c_void_p, c_void_p)
+    PROXY_JOIN_CALLBACK = CFUNCTYPE(None, c_void_p, c_int)
 
     DEVICE_HANDLER = CFUNCTYPE(None, c_void_p, c_void_p, c_void_p)
     CLIENT_HANDLER = CFUNCTYPE(None, c_void_p, c_void_p, c_void_p)
@@ -97,7 +108,8 @@ class DeviceProxyLib:
             if level < self.LOG_LEVEL_DEBUG:
                 return
             msg = get_string(self.gcdp__log_record__get_message, record)
-            logger.debug(msg)
+            level = self.log_level_map.get(level, logging.DEBUG)
+            logger.log(level, msg)
 
         self.__log_callback = self.LOG_CALLBACK(log_callback)
 
@@ -169,8 +181,12 @@ class DeviceProxyLib:
                 ('gcdp__proxy_config__free', [c_void_p]),
 
                 ('gcdp__proxy__new', [c_void_p], c_void_p),
-                ('gcdp__proxy__stop', [c_void_p, c_uint32], c_int),
+                ('gcdp__proxy__new_async', [c_void_p, self.NEW_PROXY_CALLBACK, c_void_p]),
+                ('gcdp__proxy__stop', [c_void_p, c_uint32]),
                 ('gcdp__proxy__abort', [c_void_p]),
+                ('gcdp__proxy__join', [c_void_p], c_int),
+                ('gcdp__proxy__join_async', [c_void_p, self.PROXY_JOIN_CALLBACK, c_void_p]),
+                ('gcdp__proxy__free', [c_void_p]),
 
                 ('gcdp__device_handler_result__accept', [c_void_p]),
                 ('gcdp__device_handler_result__unauthorized', [c_void_p]),

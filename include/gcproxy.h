@@ -41,6 +41,9 @@ typedef void client_handler_t(void* context, request_t* request, client_handler_
 typedef void proxy_config_t;
 typedef void proxy_t;
 
+typedef void new_proxy_cb_t(void* context, proxy_t* proxy);
+typedef void join_proxy_cb_t(void* context, int res);
+
 #define LOG_LEVEL_TRACE     0
 #define LOG_LEVEL_DEBUG     1
 #define LOG_LEVEL_INFO      2
@@ -215,25 +218,73 @@ void gcdp__proxy_config__free(proxy_config_t* config);
 proxy_t* gcdp__proxy__new(const proxy_config_t* config);
 
 /**
- * @brief Gracefully stop and free a given proxy.
+ * @brief Create and start a new proxy from a given config.
+ *
+ * The function will return immediately and the resulting proxy will be passed
+ * to a given callback once available.
+ *
+ * @param config proxy config
+ * @param cb callback
+ * @param context arbitrary context (optional)
+ */
+void gcdp__proxy__new_async(const proxy_config_t* config, new_proxy_cb_t* cb, void* context);
+
+/**
+ * @brief Gracefully stop a given proxy.
  *
  * If the proxy isn't stopped until the timeout, its execution will be aborted.
  *
+ * The function only initiates the stop. The caller should also use the join
+ * method to make sure that the proxy has stopped.
+ *
  * @param proxy proxy
  * @param timeout timeout in milliseconds
- * @return int 0 on success, error code in case of an error
  */
-int gcdp__proxy__stop(proxy_t* proxy, uint32_t timeout);
+void gcdp__proxy__stop(proxy_t* proxy, uint32_t timeout);
 
 /**
- * @brief Abort the proxy execution and free the proxy.
+ * @brief Abort the proxy execution.
+ *
+ * The function only initiates the abort. The caller should also use the join
+ * method to make sure that the proxy has stopped.
  *
  * @param proxy proxy
  */
 void gcdp__proxy__abort(proxy_t* proxy);
 
 /**
+ * @brief Wait until the proxy stops.
+ *
+ * @param proxy proxy
+ * @return int 0 on success, error code on error
+ */
+int gcdp__proxy__join(proxy_t* proxy);
+
+/**
+ * @brief Wait until the proxy stops.
+ *
+ * The function will return immediately and the join result will be passed to
+ * a given callback once available.
+ *
+ * @param proxy proxy
+ * @param cb callback
+ * @param context arbitrary context (optional)
+ */
+void gcdp__proxy__join_async(proxy_t* proxy, join_proxy_cb_t* cb, void* context);
+
+/**
+ * @brief Free a given proxy.
+ *
+ * The proxy execution will be aborted if the proxy is still running.
+ *
+ * @param proxy proxy
+ */
+void gcdp__proxy__free(proxy_t* proxy);
+
+/**
  * @brief Accept the corresponding GoodCam device.
+ *
+ * The function takes ownership of the result.
  *
  * @param result device handler result
  */
@@ -242,12 +293,16 @@ void gcdp__device_handler_result__accept(device_handler_result_t* result);
 /**
  * @brief Reject the corresponding GoodCam device.
  *
+ * The function takes ownership of the result.
+ *
  * @param result device handler result
  */
 void gcdp__device_handler_result__unauthorized(device_handler_result_t* result);
 
 /**
  * @brief Redirect the corresponding GoodCam device to a given location.
+ *
+ * On success, this function takes ownership of the result.
  *
  * @param result device handler result
  * @param location new location (URL is expected)
@@ -262,6 +317,8 @@ int gcdp__device_handler_result__redirect(device_handler_result_t* result, const
  * an internal server error (i.e. HTTP 500). This function is useful if the
  * handler isn't able make its decision (e.g. it cannot connect to a database).
  *
+ * On success, this function takes ownership of the result.
+ *
  * @param result device handler result
  * @param error error message
  * @return int 0 on success, error code if the error message is invalid
@@ -271,7 +328,7 @@ int gcdp__device_handler_result__error(device_handler_result_t* result, const ch
 /**
  * @brief Forward a given request to a given GoodCam device.
  *
- * On success, this function takes ownership of the request.
+ * On success, this function takes ownership of the request and the result.
  *
  * @param result client handler result
  * @param device_id ID of the target GoodCam device
@@ -283,7 +340,7 @@ int gcdp__client_handler_result__forward(client_handler_result_t* result, const 
 /**
  * @brief Block the corresponding client request and send a given response.
  *
- * On success, this function takes ownership of the response.
+ * On success, this function takes ownership of the response and the result.
  *
  * @param result client handler result
  * @param response response to be sent back to the corresponding client
@@ -297,6 +354,8 @@ int gcdp__client_handler_result__block(client_handler_result_t* result, response
  * The error will be logged and the corresponding client will receive an
  * internal server error (i.e. HTTP 500). This function is useful if the
  * handler isn't able make its decision (e.g. it cannot connect to a database).
+ *
+ * On success, this function takes ownership of the result.
  *
  * @param result client handler result
  * @param error error message

@@ -1,12 +1,18 @@
 use std::{
+    borrow::Cow,
     ffi::c_void,
     net::{IpAddr, SocketAddr},
     os::raw::{c_char, c_int},
     ptr,
+    sync::Mutex,
     time::Duration,
 };
 
-use futures::future::Either;
+use async_trait::async_trait;
+use futures::{
+    channel::oneshot::{self, Sender},
+    future::Either,
+};
 use hyper::{Body, Request, Response};
 use libc::{EINVAL, EIO};
 use tokio::{
@@ -15,23 +21,43 @@ use tokio::{
 };
 
 use crate::{
-    auth::BasicAuthorization, BlockingRequestHandler, ClientHandlerResult, DeviceHandlerResult,
-    Error, ProxyBuilder, ProxyHandle, RequestHandler, RequestHandlerAdapter,
+    auth::BasicAuthorization, ClientHandlerResult, DeviceHandlerResult, Error, ProxyBuilder,
+    ProxyHandle, RequestHandler,
 };
+
+///
+type NewProxyCallback = unsafe extern "C" fn(context: *mut c_void, proxy: *mut RawProxyHandle);
+
+///
+type ProxyJoinCallback = unsafe extern "C" fn(context: *mut c_void, res: c_int);
 
 ///
 type RawDeviceHandlerFn = unsafe extern "C" fn(
     context: *mut c_void,
     authorization: *const BasicAuthorization,
-    result: *mut Result<DeviceHandlerResult, Error>,
+    result: *mut Sender<Result<DeviceHandlerResult, Error>>,
 );
 
 ///
 type RawClientHandlerFn = unsafe extern "C" fn(
     context: *mut c_void,
     request: *mut Request<Body>,
-    result: *mut Result<ClientHandlerResult, Error>,
+    result: *mut Sender<Result<ClientHandlerResult, Error>>,
 );
+
+///
+struct RawContextWrapper(*mut c_void);
+
+impl RawContextWrapper {
+    ///
+    fn unwrap(self) -> *mut c_void {
+        let Self(ptr) = self;
+
+        ptr
+    }
+}
+
+unsafe impl Send for RawContextWrapper {}
 
 ///
 #[derive(Copy, Clone)]
@@ -54,32 +80,50 @@ impl RawRequestHandler {
     }
 }
 
-impl BlockingRequestHandler for RawRequestHandler {
-    fn handle_device_request(
+#[async_trait]
+impl RequestHandler for RawRequestHandler {
+    async fn handle_device_request(
         &self,
         authorization: BasicAuthorization,
     ) -> Result<DeviceHandlerResult, Error> {
-        let mut result = Ok(DeviceHandlerResult::Unauthorized);
+        let (tx, rx) = oneshot::channel();
 
-        unsafe {
-            (self.handle_device)(self.device_context, &authorization, &mut result);
-        }
+        let this = *self;
 
-        result
+        tokio::task::spawn_blocking(move || {
+            // we need to capture the whole request handler
+            let this = this;
+
+            let tx = Box::into_raw(Box::new(tx));
+
+            unsafe { (this.handle_device)(this.device_context, &authorization, tx) }
+        });
+
+        rx.await
+            .map_err(|_| Error::from_static_msg("device handler failure"))?
     }
 
-    fn handle_client_request(&self, request: Request<Body>) -> Result<ClientHandlerResult, Error> {
-        let request = Box::into_raw(Box::new(request));
+    async fn handle_client_request(
+        &self,
+        request: Request<Body>,
+    ) -> Result<ClientHandlerResult, Error> {
+        let (tx, rx) = oneshot::channel();
 
-        let response = Response::builder().status(501).body(Body::empty()).unwrap();
+        let this = *self;
 
-        let mut result = Ok(ClientHandlerResult::block(response));
+        tokio::task::spawn_blocking(move || {
+            // we need to capture the whole request handler
+            let this = this;
 
-        unsafe {
-            (self.handle_client)(self.client_context, request, &mut result);
-        }
+            let request = Box::into_raw(Box::new(request));
 
-        result
+            let tx = Box::into_raw(Box::new(tx));
+
+            unsafe { (this.handle_client)(this.client_context, request, tx) }
+        });
+
+        rx.await
+            .map_err(|_| Error::from_static_msg("client handler failure"))?
     }
 }
 
@@ -87,22 +131,29 @@ unsafe impl Send for RawRequestHandler {}
 unsafe impl Sync for RawRequestHandler {}
 
 ///
-extern "C" fn dummy_device_request_handler(
+unsafe extern "C" fn dummy_device_request_handler(
     _: *mut c_void,
     _: *const BasicAuthorization,
-    _: *mut Result<DeviceHandlerResult, Error>,
+    tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
 ) {
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Ok(DeviceHandlerResult::Unauthorized));
 }
 
 ///
-extern "C" fn dummy_client_request_handler(
+unsafe extern "C" fn dummy_client_request_handler(
     _: *mut c_void,
     request: *mut Request<Body>,
-    _: *mut Result<ClientHandlerResult, Error>,
+    tx: *mut Sender<Result<ClientHandlerResult, Error>>,
 ) {
-    unsafe {
-        Box::from_raw(request);
-    }
+    Box::from_raw(request);
+
+    let tx = Box::from_raw(tx);
+
+    let response = Response::builder().status(501).body(Body::empty()).unwrap();
+
+    let _ = tx.send(Ok(ClientHandlerResult::block(response)));
 }
 
 ///
@@ -132,13 +183,153 @@ impl ProxyConfig {
             tls_mode: TlsMode::None,
         }
     }
+
+    ///
+    fn to_builder(&self) -> Result<ProxyBuilder, Error> {
+        let mut builder = ProxyBuilder::new();
+
+        builder.hostname(&self.hostname);
+
+        for addr in &self.http_bind_addresses {
+            builder.http_bind_address(*addr);
+        }
+
+        for addr in &self.https_bind_addresses {
+            builder.https_bind_address(*addr);
+        }
+
+        match &self.tls_mode {
+            TlsMode::None => (),
+            TlsMode::LetsEncrypt => {
+                builder.lets_encrypt();
+            }
+            TlsMode::Simple(key, cert) => {
+                builder.tls_identity(key, cert)?;
+            }
+        }
+
+        Ok(builder)
+    }
+}
+
+///
+struct RawProxyContext {
+    runtime: Runtime,
+    handle: ProxyHandle,
+    task: Option<JoinHandle<Result<(), Error>>>,
+}
+
+impl RawProxyContext {
+    ///
+    fn start<T, F>(builder: ProxyBuilder, request_handler: T, cb: F)
+    where
+        T: RequestHandler + Send + Sync + 'static,
+        F: FnOnce(Result<RawProxyContext, Error>) + Send + 'static,
+    {
+        let res = runtime::Builder::new_multi_thread()
+            .enable_io()
+            .enable_time()
+            .build();
+
+        let runtime = match res {
+            Ok(r) => r,
+            Err(err) => return cb(Err(err.into())),
+        };
+
+        runtime.handle().clone().spawn(async move {
+            let proxy = match builder.build(request_handler).await {
+                Ok(p) => p,
+                Err(err) => return cb(Err(err.into())),
+            };
+
+            let handle = proxy.handle();
+
+            let task = tokio::spawn(proxy);
+
+            let res = Self {
+                runtime,
+                handle,
+                task: Some(task),
+            };
+
+            cb(Ok(res));
+        });
+    }
+
+    ///
+    fn stop(&mut self, timeout: Duration) {
+        if let Some(task) = self.task.take() {
+            let handle = self.handle.clone();
+
+            let task = self.runtime.spawn(async move {
+                handle.stop();
+
+                let delay = tokio::time::sleep(timeout);
+
+                futures::pin_mut!(delay);
+                futures::pin_mut!(task);
+
+                let select = futures::future::select(delay, task);
+
+                match select.await {
+                    Either::Left((_, task)) => {
+                        // abort the task
+                        handle.abort();
+
+                        // and wait until it stops
+                        let _ = task.await;
+
+                        Err(Error::from_static_msg("timeout"))
+                    }
+                    Either::Right((res, _)) => match res {
+                        Ok(res) => res.map_err(Error::from),
+                        Err(_) => Ok(()),
+                    },
+                }
+            });
+
+            self.task = Some(task);
+        }
+    }
+
+    ///
+    fn abort(&self) {
+        self.handle.abort();
+    }
+
+    ///
+    fn join<F>(&mut self, cb: F)
+    where
+        F: FnOnce(Result<(), Error>) + Send + 'static,
+    {
+        if let Some(task) = self.task.take() {
+            let task = self.runtime.spawn(async move {
+                let res = match task.await {
+                    Ok(res) => res,
+                    Err(_) => Ok(()),
+                };
+
+                cb(res);
+
+                Ok(())
+            });
+
+            self.task = Some(task);
+        } else {
+            cb(Ok(()));
+        }
+    }
+}
+
+impl Drop for RawProxyContext {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 ///
 struct RawProxyHandle {
-    runtime: Runtime,
-    handle: ProxyHandle,
-    task: JoinHandle<Result<(), Error>>,
+    context: Mutex<RawProxyContext>,
 }
 
 impl RawProxyHandle {
@@ -147,65 +338,63 @@ impl RawProxyHandle {
     where
         T: RequestHandler + Send + Sync + 'static,
     {
-        let runtime = runtime::Builder::new_multi_thread()
-            .enable_io()
-            .enable_time()
-            .build()?;
+        let (tx, rx) = std::sync::mpsc::channel();
 
-        let proxy = runtime.block_on(builder.build(request_handler))?;
+        Self::start_async(builder, request_handler, move |res| {
+            let _ = tx.send(res);
+        });
 
-        let handle = proxy.handle();
-
-        let task = runtime.spawn(proxy);
-
-        let res = Self {
-            runtime,
-            handle,
-            task,
-        };
-
-        Ok(res)
+        rx.recv().unwrap()
     }
 
     ///
-    fn stop(self, timeout: Duration) -> Result<(), Error> {
-        self.runtime.block_on(async move {
-            self.handle.stop();
+    fn start_async<T, F>(builder: ProxyBuilder, request_handler: T, cb: F)
+    where
+        T: RequestHandler + Send + Sync + 'static,
+        F: FnOnce(Result<RawProxyHandle, Error>) + Send + 'static,
+    {
+        RawProxyContext::start(builder, request_handler, move |res| match res {
+            Ok(ctx) => {
+                let res = Self {
+                    context: Mutex::new(ctx),
+                };
 
-            let delay = tokio::time::sleep(timeout);
-
-            let task = self.task;
-
-            futures::pin_mut!(delay);
-            futures::pin_mut!(task);
-
-            let select = futures::future::select(delay, task);
-
-            match select.await {
-                Either::Left((_, task)) => {
-                    // abort the task
-                    self.handle.abort();
-
-                    // and wait until it stops
-                    let _ = task.await;
-
-                    Err(Error::from_static_msg("timeout"))
-                }
-                Either::Right((res, _)) => match res {
-                    Ok(res) => res.map_err(Error::from),
-                    Err(_) => Ok(()),
-                },
+                cb(Ok(res));
             }
+            Err(err) => cb(Err(err)),
         })
     }
 
     ///
-    fn abort(self) {
-        // abort the task
-        self.handle.abort();
+    fn stop(&self, timeout: Duration) {
+        self.context.lock().unwrap().stop(timeout);
+    }
 
-        // and wait until it stops
-        let _ = self.runtime.block_on(self.task);
+    ///
+    fn abort(&self) {
+        self.context.lock().unwrap().abort();
+    }
+
+    ///
+    fn join(&self) -> Result<(), Error> {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        self.context.lock().unwrap().join(move |res| {
+            let _ = tx.send(res);
+        });
+
+        match rx.recv() {
+            Ok(res) => res,
+            Err(_) => Ok(()),
+        }
+    }
+
+    ///
+    fn join_async<F>(&self, cb: F)
+    where
+        F: FnOnce(Result<(), Error>) + Send + 'static,
+    {
+        self.context.lock().unwrap().join(cb);
     }
 }
 
@@ -326,34 +515,12 @@ extern "C" fn gcdp__proxy_config__free(config: *mut ProxyConfig) {
 extern "C" fn gcdp__proxy__new(config: *const ProxyConfig) -> *mut RawProxyHandle {
     let config = unsafe { &*config };
 
-    let mut builder = ProxyBuilder::new();
-
-    builder.hostname(&config.hostname);
-
-    for addr in &config.http_bind_addresses {
-        builder.http_bind_address(*addr);
-    }
-
-    for addr in &config.https_bind_addresses {
-        builder.https_bind_address(*addr);
-    }
-
-    match &config.tls_mode {
-        TlsMode::None => (),
-        TlsMode::LetsEncrypt => {
-            builder.lets_encrypt();
-        }
-        TlsMode::Simple(key, cert) => {
-            try_result!(EINVAL, ptr::null_mut(), builder.tls_identity(key, cert));
-        }
-    }
-
-    let handler = RequestHandlerAdapter::from(config.handler);
+    let builder = try_result!(EINVAL, ptr::null_mut(), config.to_builder());
 
     let handle = try_result!(
         EIO,
         ptr::null_mut(),
-        RawProxyHandle::start(builder, handler)
+        RawProxyHandle::start(builder, config.handler)
     );
 
     Box::into_raw(Box::new(handle))
@@ -361,126 +528,219 @@ extern "C" fn gcdp__proxy__new(config: *const ProxyConfig) -> *mut RawProxyHandl
 
 ///
 #[no_mangle]
-extern "C" fn gcdp__proxy__stop(proxy: *mut RawProxyHandle, timeout: u32) -> c_int {
-    let handle = unsafe { Box::from_raw(proxy) };
+extern "C" fn gcdp__proxy__new_async(
+    config: *const ProxyConfig,
+    cb: NewProxyCallback,
+    context: *mut c_void,
+) {
+    let config = unsafe { &*config };
 
-    try_result!(EIO, handle.stop(Duration::from_millis(timeout as u64)));
+    let context = RawContextWrapper(context);
 
-    0
+    let cb = move |proxy| unsafe { cb(context.unwrap(), proxy) };
+
+    let builder = match config.to_builder() {
+        Ok(b) => b,
+        Err(err) => {
+            // set the error
+            super::set_last_error(EIO, Cow::Owned(err.to_string()));
+
+            // and return NULL
+            return cb(ptr::null_mut());
+        }
+    };
+
+    RawProxyHandle::start_async(builder, config.handler, move |res| match res {
+        Ok(handle) => cb(Box::into_raw(Box::new(handle))),
+        Err(err) => {
+            // set the error
+            super::set_last_error(EIO, Cow::Owned(err.to_string()));
+
+            // and return NULL
+            cb(ptr::null_mut());
+        }
+    });
+}
+
+///
+#[no_mangle]
+extern "C" fn gcdp__proxy__stop(proxy: *mut RawProxyHandle, timeout: u32) {
+    let handle = unsafe { &*proxy };
+
+    handle.stop(Duration::from_millis(timeout as u64));
 }
 
 ///
 #[no_mangle]
 extern "C" fn gcdp__proxy__abort(proxy: *mut RawProxyHandle) {
-    let handle = unsafe { Box::from_raw(proxy) };
+    let handle = unsafe { &*proxy };
 
     handle.abort();
 }
 
 ///
 #[no_mangle]
-extern "C" fn gcdp__device_handler_result__accept(result: *mut Result<DeviceHandlerResult, Error>) {
-    let result = unsafe { &mut *result };
+unsafe extern "C" fn gcdp__proxy__join(proxy: *mut RawProxyHandle) -> c_int {
+    let handle = &*proxy;
 
-    *result = Ok(DeviceHandlerResult::Accept)
+    try_result!(EIO, handle.join());
+
+    0
 }
 
 ///
+#[no_mangle]
+unsafe extern "C" fn gcdp__proxy__join_async(
+    proxy: *mut RawProxyHandle,
+    cb: ProxyJoinCallback,
+    context: *mut c_void,
+) {
+    let handle = &*proxy;
+
+    let context = RawContextWrapper(context);
+
+    handle.join_async(move |res| match res {
+        Ok(()) => cb(context.unwrap(), 0),
+        Err(err) => {
+            // set the error
+            super::set_last_error(EIO, Cow::Owned(err.to_string()));
+
+            // and return the error code
+            cb(context.unwrap(), EIO);
+        }
+    });
+}
+
+///
+#[no_mangle]
+extern "C" fn gcdp__proxy__free(proxy: *mut RawProxyHandle) {
+    unsafe { super::free(proxy) }
+}
+
+///
+///
+/// The function takes ownership of the sender.
+#[no_mangle]
+extern "C" fn gcdp__device_handler_result__accept(
+    tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
+) {
+    let tx = unsafe { Box::from_raw(tx) };
+
+    let _ = tx.send(Ok(DeviceHandlerResult::Accept));
+}
+
+///
+///
+/// The function takes ownership of the sender.
 #[no_mangle]
 extern "C" fn gcdp__device_handler_result__unauthorized(
-    result: *mut Result<DeviceHandlerResult, Error>,
+    tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
 ) {
-    let result = unsafe { &mut *result };
+    let tx = unsafe { Box::from_raw(tx) };
 
-    *result = Ok(DeviceHandlerResult::Unauthorized)
+    let _ = tx.send(Ok(DeviceHandlerResult::Unauthorized));
 }
 
 ///
+///
+/// The function takes ownership of the sender.
 #[no_mangle]
 unsafe extern "C" fn gcdp__device_handler_result__redirect(
-    result: *mut Result<DeviceHandlerResult, Error>,
+    tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
     location: *const c_char,
 ) -> c_int {
-    let result = &mut *result;
-
-    if let Some(location) = try_result!(EINVAL, super::cstr_to_str(location)) {
-        *result = Ok(DeviceHandlerResult::Redirect(location.to_string()));
+    let location = if let Some(location) = try_result!(EINVAL, super::cstr_to_str(location)) {
+        location
     } else {
         throw!(EINVAL, "location cannot be null");
-    }
+    };
+
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Ok(DeviceHandlerResult::redirect(location)));
 
     0
 }
 
 ///
+///
+/// The function takes ownership of the sender.
 #[no_mangle]
 unsafe extern "C" fn gcdp__device_handler_result__error(
-    result: *mut Result<DeviceHandlerResult, Error>,
+    tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
     error: *const c_char,
 ) -> c_int {
-    let result = &mut *result;
+    let error = try_result!(EINVAL, super::cstr_to_error(error));
 
-    *result = Err(try_result!(EINVAL, super::cstr_to_error(error)));
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Err(error));
 
     0
 }
 
 ///
 ///
-/// The function takes ownership of the request.
+/// The function takes ownership of the request and the sender.
 #[no_mangle]
 unsafe extern "C" fn gcdp__client_handler_result__forward(
-    result: *mut Result<ClientHandlerResult, Error>,
+    tx: *mut Sender<Result<ClientHandlerResult, Error>>,
     device_id: *const c_char,
     request: *mut Request<Body>,
 ) -> c_int {
-    let result = &mut *result;
-
     if request.is_null() {
         throw!(EINVAL, "request cannot be null");
     }
 
-    if let Some(device_id) = try_result!(EINVAL, super::cstr_to_str(device_id)) {
-        let request = Box::from_raw(request);
-
-        *result = Ok(ClientHandlerResult::forward(device_id, *request));
+    let device_id = if let Some(device_id) = try_result!(EINVAL, super::cstr_to_str(device_id)) {
+        device_id
     } else {
         throw!(EINVAL, "device ID cannot be null");
-    }
+    };
+
+    let request = Box::from_raw(request);
+
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Ok(ClientHandlerResult::forward(device_id, *request)));
 
     0
 }
 
 ///
 ///
-/// The function takes ownership of the response.
+/// The function takes ownership of the response and the sender.
 #[no_mangle]
 unsafe extern "C" fn gcdp__client_handler_result__block(
-    result: *mut Result<ClientHandlerResult, Error>,
+    tx: *mut Sender<Result<ClientHandlerResult, Error>>,
     response: *mut Response<Body>,
 ) -> c_int {
-    let result = &mut *result;
-
     if response.is_null() {
         throw!(EINVAL, "response cannot be null");
     }
 
     let response = Box::from_raw(response);
 
-    *result = Ok(ClientHandlerResult::block(*response));
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Ok(ClientHandlerResult::block(*response)));
 
     0
 }
 
 ///
+///
+/// The function takes ownership of the sender.
 #[no_mangle]
 unsafe extern "C" fn gcdp__client_handler_result__error(
-    result: *mut Result<ClientHandlerResult, Error>,
+    tx: *mut Sender<Result<ClientHandlerResult, Error>>,
     error: *const c_char,
 ) -> c_int {
-    let result = &mut *result;
+    let error = try_result!(EINVAL, super::cstr_to_error(error));
 
-    *result = Err(try_result!(EINVAL, super::cstr_to_error(error)));
+    let tx = Box::from_raw(tx);
+
+    let _ = tx.send(Err(error));
 
     0
 }
