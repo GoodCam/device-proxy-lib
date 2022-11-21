@@ -3,7 +3,7 @@ use std::{
     os::raw::{c_char, c_int},
 };
 
-use log::{Level, Log, Metadata, Record};
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 ///
 type RawLogHandlerFn = unsafe extern "C" fn(context: *mut c_void, request: *const Record);
@@ -35,6 +35,8 @@ extern "C" fn gcdp_set_logger(handler: RawLogHandlerFn, context: *mut c_void) ->
     let logger = Logger { context, handler };
 
     try_result!(libc::EALREADY, log::set_boxed_logger(Box::new(logger)));
+
+    log::set_max_level(LevelFilter::Debug);
 
     0
 }

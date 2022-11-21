@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate log;
+
 mod acme;
 mod binding;
 mod device;
@@ -225,6 +228,11 @@ impl ProxyBuilder {
     where
         T: RequestHandler + Send + Sync + 'static,
     {
+        info!("Starting GoodCam device proxy");
+        info!("HTTP bindings: {:?}", self.http_bind_addresses);
+        info!("HTTPS bindings: {:?}", self.https_bind_addresses);
+        info!("hostname: {}", self.hostname);
+
         let acme_challenges = acme::ChallengeRegistrations::new();
 
         let acme_account = self.tls_mode.create_acme_account().await?;
@@ -330,6 +338,8 @@ impl ProxyBuilder {
             join: Box::pin(join),
             handle,
         };
+
+        info!("Proxy started");
 
         Ok(proxy)
     }
