@@ -3,7 +3,7 @@ use std::os::raw::{c_char, c_int};
 use hyper::{http::header::HeaderValue, Body, Response};
 use libc::EINVAL;
 
-///
+/// Create a new HTTP response with a given status code.
 #[no_mangle]
 extern "C" fn gcdp__response__new(status: u16) -> *mut Response<Body> {
     let response = Response::builder()
@@ -14,7 +14,7 @@ extern "C" fn gcdp__response__new(status: u16) -> *mut Response<Body> {
     Box::into_raw(Box::new(response))
 }
 
-///
+/// Add a given HTTP header field to the response.
 #[no_mangle]
 unsafe extern "C" fn gcdp__response__add_header(
     response: *mut Response<Body>,
@@ -40,7 +40,7 @@ unsafe extern "C" fn gcdp__response__add_header(
     0
 }
 
-///
+/// Replace all header fields with a given name (ignoring case).
 #[no_mangle]
 unsafe extern "C" fn gcdp__response__set_header(
     response: *mut Response<Body>,
@@ -66,7 +66,7 @@ unsafe extern "C" fn gcdp__response__set_header(
     0
 }
 
-///
+/// Set the response body.
 #[no_mangle]
 unsafe extern "C" fn gcdp__response__set_body(
     response: *mut Response<Body>,
@@ -80,7 +80,7 @@ unsafe extern "C" fn gcdp__response__set_body(
     *response.body_mut() = Body::from(body);
 }
 
-///
+/// Free the response.
 #[no_mangle]
 extern "C" fn gcdp__response__free(response: *mut Response<Body>) {
     unsafe { super::free(response) }

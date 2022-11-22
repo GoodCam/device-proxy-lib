@@ -16,20 +16,23 @@ use tokio_native_tls::TlsStream;
 
 use crate::tls::TlsAcceptor;
 
-///
+/// Collection of TCP/TLS bindings.
 pub struct Bindings {
     bindings: VecDeque<Binding>,
 }
 
 impl Bindings {
-    ///
+    /// Create a new collection.
     pub fn new() -> Self {
         Self {
             bindings: VecDeque::new(),
         }
     }
 
+    /// Add plain TCP bindings.
     ///
+    /// The method will create TCP listeners for all bindings from a given
+    /// iterator.
     pub async fn add_tcp_bindings<T>(&mut self, addresses: T) -> io::Result<()>
     where
         T: IntoIterator<Item = SocketAddr>,
@@ -43,7 +46,11 @@ impl Bindings {
         Ok(())
     }
 
+    /// Add TLS bindings.
     ///
+    /// The method will create TCP listeners for all bindings from a given
+    /// iterator. The TLS acceptor will be used for the TLS handshake on
+    /// incoming connections.
     pub async fn add_tls_bindings<T>(
         &mut self,
         acceptor: TlsAcceptor,
@@ -88,7 +95,7 @@ impl Stream for Bindings {
     }
 }
 
-///
+/// TCP/TLS binding.
 pub struct Binding {
     local_addr: SocketAddr,
     listener: TcpListener,
@@ -96,7 +103,7 @@ pub struct Binding {
 }
 
 impl Binding {
-    ///
+    /// Create a new TCP binding.
     pub async fn tcp(bind_address: SocketAddr) -> io::Result<Self> {
         let listener = TcpListener::bind(bind_address).await?;
 
@@ -111,7 +118,7 @@ impl Binding {
         Ok(res)
     }
 
-    ///
+    /// Create a new TLS binding.
     pub async fn tls(bind_address: SocketAddr, acceptor: TlsAcceptor) -> io::Result<Self> {
         let listener = TcpListener::bind(bind_address).await?;
 
@@ -126,7 +133,7 @@ impl Binding {
         Ok(res)
     }
 
-    ///
+    /// Get the next incoming connection.
     fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<io::Result<Connection>> {
         let (stream, remote_addr) = ready!(self.listener.poll_accept(cx))?;
 
@@ -146,25 +153,25 @@ impl Binding {
     }
 }
 
-///
+/// Type alias.
 type TlsAcceptResult = io::Result<TlsStream<TcpStream>>;
 
-///
+/// Type alias.
 type PendingTlsConnection = Pin<Box<dyn Future<Output = TlsAcceptResult> + Send>>;
 
-///
+/// Incoming TCP/TLS connection.
 pub struct Connection {
     inner: InnerConnection,
     info: ConnectionInfo,
 }
 
 impl Connection {
-    ///
+    /// Create a new connection.
     fn new(inner: InnerConnection, info: ConnectionInfo) -> Self {
         Self { inner, info }
     }
 
-    ///
+    /// Get the connection info.
     pub fn info(&self) -> ConnectionInfo {
         self.info
     }
@@ -210,7 +217,10 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// Connection info.
 ///
+/// The connection info is available via request extensions. See
+/// [`hyper::http::Request`] for more info.
 #[derive(Debug, Copy, Clone)]
 pub struct ConnectionInfo {
     local_addr: SocketAddr,
@@ -219,23 +229,23 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    ///
+    /// Get the local address where the underlying socket is connected to.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    ///
+    /// Get the remote peer address.
     pub fn remote_addr(&self) -> SocketAddr {
         self.remote_addr
     }
 
-    ///
+    /// Check if this is an HTTPS connection.
     pub fn is_https(&self) -> bool {
         self.is_https
     }
 }
 
-///
+/// Inner connection.
 enum InnerConnection {
     Tcp(TcpStream),
     Tls(TlsStream<TcpStream>),

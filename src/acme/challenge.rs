@@ -12,21 +12,21 @@ use futures::{
 };
 use hyper::{Body, Response};
 
-///
+/// Collection of ACME challenge registrations.
 #[derive(Clone)]
 pub struct ChallengeRegistrations {
     inner: Arc<Mutex<HashMap<String, ChallengeRegistration>>>,
 }
 
 impl ChallengeRegistrations {
-    ///
+    /// Create a new collection.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    ///
+    /// Register a given ACME challenge.
     pub fn register(&self, challenge: &Challenge) -> ChallengeAuthorized {
         let token = String::from(challenge.token());
 
@@ -37,7 +37,8 @@ impl ChallengeRegistrations {
         authorized
     }
 
-    ///
+    /// Create challenge response for a given challenge token or return `None`
+    /// if the token is not known.
     pub fn create_response(&self, token: &str) -> Option<Response<Body>> {
         let mut inner = self.inner.lock().unwrap();
 
@@ -46,20 +47,20 @@ impl ChallengeRegistrations {
         Some(registration.to_http_response())
     }
 
-    ///
+    /// Remove a given challenge registration.
     pub fn deregister(&self, token: &str) {
         self.inner.lock().unwrap().remove(token);
     }
 }
 
-///
+/// ACME challenge registration.
 struct ChallengeRegistration {
     key_authorization: String,
     authorized_tx: Option<Sender<()>>,
 }
 
 impl ChallengeRegistration {
-    ///
+    /// Create a new ACME challenge registration.
     fn new<T>(key_authorization: T) -> (Self, ChallengeAuthorized)
     where
         T: ToString,
@@ -76,7 +77,7 @@ impl ChallengeRegistration {
         (registration, authorized)
     }
 
-    ///
+    /// Construct an HTTP response for this challenge registration.
     #[allow(clippy::wrong_self_convention)]
     fn to_http_response(&mut self) -> Response<Body> {
         let guard = SendGuard {
@@ -92,7 +93,9 @@ impl ChallengeRegistration {
     }
 }
 
-///
+/// Send guard that will resolve the corresponding [`ChallengeAuthorized`]
+/// future when the corresponding response is delivered to the remote ACME
+/// service.
 struct SendGuard {
     tx: Option<Sender<()>>,
 }
@@ -105,7 +108,8 @@ impl Drop for SendGuard {
     }
 }
 
-///
+/// Future that will be resolved once the corresponding ACME challenge was
+/// requested by the corresponding ACME service.
 pub struct ChallengeAuthorized {
     rx: oneshot::Receiver<()>,
 }
@@ -121,14 +125,14 @@ impl Future for ChallengeAuthorized {
     }
 }
 
-///
+/// ACME challenge.
 pub struct Challenge {
     token: String,
     key_authorization: String,
 }
 
 impl Challenge {
-    ///
+    /// Create a new ACME challenge.
     pub fn new<T, U>(token: T, key_authorization: U) -> Self
     where
         T: ToString,
@@ -140,12 +144,12 @@ impl Challenge {
         }
     }
 
-    ///
+    /// Get the challenge token (i.e. the challenge identification).
     pub fn token(&self) -> &str {
         &self.token
     }
 
-    ///
+    /// Get the challenge key authorization (i.e. the challenge response).
     pub fn key_authorization(&self) -> &str {
         &self.key_authorization
     }

@@ -1,3 +1,58 @@
+//! # GoodCam Device Proxy
+//!
+//! This library simplifies creating HTTP proxies that can be used to communicate
+//! with GoodCam devices in various networks. GoodCam devices contain a
+//! [built-in client](https://goodcam.github.io/goodcam-api/#tag/cloud>) that
+//! can be configured to connect automatically to a given proxy. Once
+//! connected, the devices will wait for incoming HTTP requests. The proxy
+//! simply forwards incoming HTTP requests to the connected devices.
+//!
+//! ## Usage example
+//!
+//! See the `examples` directory in the root of this repository for a
+//! ready-to-use example.
+//!
+//! ```ignore
+//! use gcdevproxy::{
+//!     async_trait::async_trait,
+//!     auth::BasicAuthorization,
+//!     http::{Body, Request},
+//!     ClientHandlerResult, DeviceHandlerResult, Error, RequestHandler,
+//! };
+//!
+//! struct MyRequestHandler;
+//!
+//! #[async_trait]
+//! impl RequestHandler for MyRequestHandler {
+//!     async fn handle_device_request(
+//!         &self,
+//!         authorization: BasicAuthorization,
+//!     ) -> Result<DeviceHandlerResult, Error> {
+//!         ...
+//!     }
+//!
+//!     async fn handle_client_request(
+//!         &self,
+//!         request: Request<Body>,
+//!     ) -> Result<ClientHandlerResult, Error> {
+//!         ...
+//!     }
+//! }
+//!
+//! let mut builder = ProxyBuilder::new();
+//!
+//! builder
+//!     .hostname(hostname)
+//!     .http_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8080)));
+//!
+//! builder
+//!     .build(MyRequestHandler)
+//!     .await
+//!     .unwrap()
+//!     .await
+//!     .unwrap();
+//! ```
+
 #[macro_use]
 extern crate log;
 
@@ -24,7 +79,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use futures::{
     channel::mpsc::{self, UnboundedSender},
     future::AbortHandle,
@@ -33,7 +87,9 @@ use futures::{
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, Version};
 use native_tls::Identity;
 
+pub use async_trait;
 pub use hyper;
+pub use hyper::http;
 
 use self::{
     auth::BasicAuthorization,
@@ -46,25 +102,34 @@ use self::{
 
 pub use self::{binding::ConnectionInfo, error::Error};
 
-///
+/// Possible results of a device connection handler.
 pub enum DeviceHandlerResult {
+    /// Accept the corresponding device connection.
     Accept,
+
+    /// Reject the corresponding device connection.
     Unauthorized,
+
+    /// Redirect the corresponding device to a given location.
     Redirect(String),
 }
 
 impl DeviceHandlerResult {
-    /// Accept the device connection.
+    /// Accept the corresponding device connection.
     pub fn accept() -> Self {
         Self::Accept
     }
 
-    /// Reject the client connection.
+    /// Reject the corresponding device connection.
     pub fn unauthorized() -> Self {
         Self::Unauthorized
     }
 
-    /// Redirect the client to another service.
+    /// Redirect the corresponding device to a given location.
+    ///
+    /// This can be used for example to implement load balancing by redirecting
+    /// incoming devices to another service if the capacity of the current
+    /// service is reached.
     pub fn redirect<T>(location: T) -> Self
     where
         T: ToString,
@@ -73,9 +138,13 @@ impl DeviceHandlerResult {
     }
 }
 
-///
+/// Possible results of a client handler.
 pub enum ClientHandlerResult {
+    /// Forward the request to a given device.
     Forward(String, Request<Body>),
+
+    /// Block the corresponding request and return a given response back to the
+    /// client.
     Block(Response<Body>),
 }
 
@@ -88,46 +157,61 @@ impl ClientHandlerResult {
         Self::Forward(device_id.to_string(), request)
     }
 
-    /// Block the request and return a given response back to the client.
+    /// Block the corresponding request and return a given response back to the
+    /// client.
     pub fn block(response: Response<Body>) -> Self {
         Self::Block(response)
     }
 }
 
-///
-#[async_trait]
+/// Common trait for proxy request handlers.
+#[async_trait::async_trait]
 pub trait RequestHandler {
+    /// Handle a given device request.
     ///
+    /// The method is responsible for device authentication and (optionally)
+    /// load balancing. It is called every time a GoodCam device connects to
+    /// the proxy. The implementation should check the device ID and key in the
+    /// authorization object.
     async fn handle_device_request(
         &self,
         authorization: BasicAuthorization,
     ) -> Result<DeviceHandlerResult, Error>;
 
+    /// Handle a given client request.
     ///
+    /// The method is responsible for authentication of a given client request.
+    /// It is called every time a client is attempting to send an HTTP request
+    /// to a GoodCam device. The implementation should verify the client
+    /// identity and permission to access a given device. It is also
+    /// responsible for extracting the target device ID from the request.
     async fn handle_client_request(
         &self,
         request: Request<Body>,
     ) -> Result<ClientHandlerResult, Error>;
 }
 
+/// Blocking version of the request handler trait.
 ///
+/// See [`RequestHandler`] for more info.
 pub trait BlockingRequestHandler {
-    ///
+    /// Handle a given device request.
     fn handle_device_request(
         &self,
         authorization: BasicAuthorization,
     ) -> Result<DeviceHandlerResult, Error>;
 
-    ///
+    /// Handle a given client request.
     fn handle_client_request(&self, request: Request<Body>) -> Result<ClientHandlerResult, Error>;
 }
 
-///
+/// Adapter to make a [`RequestHandler`] from a given
+/// [`BlockingRequestHandler`].
 pub struct RequestHandlerAdapter<T> {
     inner: Arc<T>,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T> RequestHandler for RequestHandlerAdapter<T>
 where
     T: BlockingRequestHandler + Send + Sync + 'static,
@@ -168,7 +252,7 @@ impl<T> From<T> for RequestHandlerAdapter<T> {
     }
 }
 
-///
+/// Proxy builder.
 pub struct ProxyBuilder {
     hostname: String,
     http_bind_addresses: Vec<SocketAddr>,
@@ -177,7 +261,7 @@ pub struct ProxyBuilder {
 }
 
 impl ProxyBuilder {
-    ///
+    /// Create a new builder.
     pub fn new() -> Self {
         Self {
             hostname: String::from("localhost"),
@@ -187,7 +271,7 @@ impl ProxyBuilder {
         }
     }
 
-    ///
+    /// Set the hostname where the proxy will be available.
     pub fn hostname<T>(&mut self, hostname: T) -> &mut Self
     where
         T: ToString,
@@ -196,19 +280,23 @@ impl ProxyBuilder {
         self
     }
 
-    ///
+    /// Add a given HTTP binding.
     pub fn http_bind_address(&mut self, addr: SocketAddr) -> &mut Self {
         self.http_bind_addresses.push(addr);
         self
     }
 
-    ///
+    /// Add a given HTTPS binding.
     pub fn https_bind_address(&mut self, addr: SocketAddr) -> &mut Self {
         self.https_bind_addresses.push(addr);
         self
     }
 
+    /// Set TLS identity (used for HTTPS).
     ///
+    /// # Arguments
+    /// * `key` - key in PEM format
+    /// * `cert` - certificate chain in PEM format
     pub fn tls_identity(&mut self, key: &[u8], cert: &[u8]) -> Result<&mut Self, Error> {
         let identity = Identity::from_pkcs8(cert, key)?;
 
@@ -217,13 +305,20 @@ impl ProxyBuilder {
         Ok(self)
     }
 
+    /// Use Let's Encrypt to generate the TLS key and certificate chain
+    /// automatically.
     ///
+    /// Please note that Let's encrypt requires HTTP services to be available
+    /// on a public domain name on TCP port 80 in order to issue a TLS
+    /// certificate. Make sure that you set the proxy hostname and that you
+    /// add at least the `0.0.0.0:80` HTTP binding.
     pub fn lets_encrypt(&mut self) -> &mut Self {
         self.tls_mode = TlsMode::LetsEncrypt;
         self
     }
 
-    ///
+    /// Build the proxy and use a given request handler to handle incoming
+    /// connections.
     pub async fn build<T>(self, request_handler: T) -> Result<Proxy, Error>
     where
         T: RequestHandler + Send + Sync + 'static,
@@ -351,19 +446,24 @@ impl Default for ProxyBuilder {
     }
 }
 
+/// GoodCam device proxy.
 ///
+/// The proxy itself is a future that will be resolved when the proxy stops.
+/// The proxy runs in a background task, so the future does not have to be
+/// polled in order to run the proxy. However, dropping the future will also
+/// abort the background task.
 pub struct Proxy {
     join: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
     handle: ProxyHandle,
 }
 
 impl Proxy {
-    ///
+    /// Get a proxy builder.
     pub fn builder() -> ProxyBuilder {
         ProxyBuilder::new()
     }
 
-    ///
+    /// Get a proxy handle.
     pub fn handle(&self) -> ProxyHandle {
         self.handle.clone()
     }
@@ -377,7 +477,7 @@ impl Future for Proxy {
     }
 }
 
-///
+/// Proxy handle.
 #[derive(Clone)]
 pub struct ProxyHandle {
     shutdown: UnboundedSender<()>,
@@ -385,18 +485,18 @@ pub struct ProxyHandle {
 }
 
 impl ProxyHandle {
-    ///
+    /// Gracefully stop the proxy.
     pub fn stop(&self) {
         let _ = self.shutdown.unbounded_send(());
     }
 
-    ///
+    /// Abort the proxy execution.
     pub fn abort(&self) {
         self.abort.abort();
     }
 }
 
-///
+/// Internal request handler.
 struct InternalRequestHandler<T> {
     acme_challenges: acme::ChallengeRegistrations,
     devices: DeviceManager,
@@ -407,7 +507,7 @@ impl<T> InternalRequestHandler<T>
 where
     T: RequestHandler + Send + Sync + 'static,
 {
-    ///
+    /// Handle a given request.
     async fn handle_request(&self, request: Request<Body>) -> Response<Body> {
         self.handle_request_inner(request)
             .await
@@ -422,7 +522,7 @@ where
             })
     }
 
-    ///
+    /// Handle a given request.
     async fn handle_request_inner(
         &self,
         request: Request<Body>,
@@ -440,7 +540,7 @@ where
         }
     }
 
-    ///
+    /// Handle a given device request.
     async fn handle_device_request(
         &self,
         request: Request<Body>,
@@ -482,7 +582,7 @@ where
         }
     }
 
-    ///
+    /// Handle a new device connection.
     async fn handle_device_connection(
         &self,
         device_id: &str,
@@ -509,7 +609,7 @@ where
         Ok(())
     }
 
-    ///
+    /// Handle a given client request.
     async fn handle_client_request(
         &self,
         request: Request<Body>,
@@ -542,12 +642,12 @@ impl<T> Clone for InternalRequestHandler<T> {
     }
 }
 
-///
+/// Request extensions/helpers.
 trait RequestExt {
-    ///
+    /// Check if this is a device request.
     fn is_device_request(&self) -> bool;
 
-    ///
+    /// Get ACME challenge token (if this is an AMC challenge request).
     fn get_acme_challenge_token(&self) -> Option<&str>;
 }
 
@@ -584,9 +684,9 @@ impl RequestExt for Request<Body> {
     }
 }
 
-///
+/// Helper for extending the `HeaderMap`.
 trait AsHeaderMapExt {
-    ///
+    /// Get the extended header map.
     fn as_ext(&self) -> HeaderMapExt;
 }
 
@@ -596,7 +696,7 @@ impl AsHeaderMapExt for HeaderMap {
     }
 }
 
-///
+/// Private helpers/extensions of the `HeaderMap`.
 struct HeaderMapExt<'a> {
     inner: &'a HeaderMap,
 }

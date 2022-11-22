@@ -40,7 +40,6 @@ impl Client {
 
         let mut default_headers = HeaderMap::new();
 
-        // TODO
         let user_agent =
             HeaderValue::try_from(format!("GoodCamDeviceProxy/{}", env!("CARGO_PKG_VERSION")));
         let language = HeaderValue::try_from("en");

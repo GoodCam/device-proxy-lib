@@ -21,45 +21,38 @@ use tokio::{
 };
 
 use crate::{
-    auth::BasicAuthorization, ClientHandlerResult, DeviceHandlerResult, Error, ProxyBuilder,
-    ProxyHandle, RequestHandler,
+    auth::BasicAuthorization, exports::RawContextWrapper, ClientHandlerResult, DeviceHandlerResult,
+    Error, ProxyBuilder, ProxyHandle, RequestHandler,
 };
 
-///
+/// Foreign callback for asynchronous proxy construction.
 type NewProxyCallback = unsafe extern "C" fn(context: *mut c_void, proxy: *mut RawProxyHandle);
 
-///
+/// Foreign callback for joining the proxy runtime.
 type ProxyJoinCallback = unsafe extern "C" fn(context: *mut c_void, res: c_int);
 
-///
+/// Foreign device request handler.
 type RawDeviceHandlerFn = unsafe extern "C" fn(
     context: *mut c_void,
     authorization: *const BasicAuthorization,
     result: *mut Sender<Result<DeviceHandlerResult, Error>>,
 );
 
-///
+/// Foreign client request handler.
 type RawClientHandlerFn = unsafe extern "C" fn(
     context: *mut c_void,
     request: *mut Request<Body>,
     result: *mut Sender<Result<ClientHandlerResult, Error>>,
 );
 
-///
-struct RawContextWrapper(*mut c_void);
-
-impl RawContextWrapper {
-    ///
-    fn unwrap(self) -> *mut c_void {
-        let Self(ptr) = self;
-
-        ptr
-    }
+/// TLS mode.
+enum TlsMode {
+    None,
+    LetsEncrypt,
+    Simple(Vec<u8>, Vec<u8>),
 }
 
-unsafe impl Send for RawContextWrapper {}
-
-///
+/// Foreign request handler.
 #[derive(Copy, Clone)]
 struct RawRequestHandler {
     handle_device: RawDeviceHandlerFn,
@@ -69,7 +62,7 @@ struct RawRequestHandler {
 }
 
 impl RawRequestHandler {
-    ///
+    /// Create a new request handler.
     fn new() -> Self {
         Self {
             handle_device: dummy_device_request_handler,
@@ -130,7 +123,7 @@ impl RequestHandler for RawRequestHandler {
 unsafe impl Send for RawRequestHandler {}
 unsafe impl Sync for RawRequestHandler {}
 
-///
+/// Default device request handler that will reject all incoming connections.
 unsafe extern "C" fn dummy_device_request_handler(
     _: *mut c_void,
     _: *const BasicAuthorization,
@@ -141,7 +134,7 @@ unsafe extern "C" fn dummy_device_request_handler(
     let _ = tx.send(Ok(DeviceHandlerResult::Unauthorized));
 }
 
-///
+/// Default client request handler that will block all incoming requests.
 unsafe extern "C" fn dummy_client_request_handler(
     _: *mut c_void,
     request: *mut Request<Body>,
@@ -156,14 +149,7 @@ unsafe extern "C" fn dummy_client_request_handler(
     let _ = tx.send(Ok(ClientHandlerResult::block(response)));
 }
 
-///
-enum TlsMode {
-    None,
-    LetsEncrypt,
-    Simple(Vec<u8>, Vec<u8>),
-}
-
-///
+/// Proxy configuration.
 struct ProxyConfig {
     handler: RawRequestHandler,
     hostname: String,
@@ -173,7 +159,7 @@ struct ProxyConfig {
 }
 
 impl ProxyConfig {
-    ///
+    /// Create a new proxy configuration.
     fn new() -> Self {
         Self {
             handler: RawRequestHandler::new(),
@@ -184,7 +170,7 @@ impl ProxyConfig {
         }
     }
 
-    ///
+    /// Create and populate a proxy builder.
     fn to_builder(&self) -> Result<ProxyBuilder, Error> {
         let mut builder = ProxyBuilder::new();
 
@@ -212,7 +198,7 @@ impl ProxyConfig {
     }
 }
 
-///
+/// Proxy context.
 struct RawProxyContext {
     runtime: Runtime,
     handle: ProxyHandle,
@@ -220,7 +206,8 @@ struct RawProxyContext {
 }
 
 impl RawProxyContext {
-    ///
+    /// Start a new proxy asynchronously and call a given callback when the
+    /// proxy has started.
     fn start<T, F>(builder: ProxyBuilder, request_handler: T, cb: F)
     where
         T: RequestHandler + Send + Sync + 'static,
@@ -239,7 +226,7 @@ impl RawProxyContext {
         runtime.handle().clone().spawn(async move {
             let proxy = match builder.build(request_handler).await {
                 Ok(p) => p,
-                Err(err) => return cb(Err(err.into())),
+                Err(err) => return cb(Err(err)),
             };
 
             let handle = proxy.handle();
@@ -256,7 +243,7 @@ impl RawProxyContext {
         });
     }
 
-    ///
+    /// Stop the proxy asynchronously.
     fn stop(&mut self, timeout: Duration) {
         if let Some(task) = self.task.take() {
             let handle = self.handle.clone();
@@ -292,12 +279,12 @@ impl RawProxyContext {
         }
     }
 
-    ///
+    /// Abort the proxy.
     fn abort(&self) {
         self.handle.abort();
     }
 
-    ///
+    /// Join the proxy runtime asynchronously.
     fn join<F>(&mut self, cb: F)
     where
         F: FnOnce(Result<(), Error>) + Send + 'static,
@@ -327,13 +314,15 @@ impl Drop for RawProxyContext {
     }
 }
 
-///
+/// Proxy handle.
 struct RawProxyHandle {
     context: Mutex<RawProxyContext>,
 }
 
 impl RawProxyHandle {
+    /// Start the proxy.
     ///
+    /// This method will block the thread until the proxy is initialized.
     fn start<T>(builder: ProxyBuilder, request_handler: T) -> Result<Self, Error>
     where
         T: RequestHandler + Send + Sync + 'static,
@@ -347,7 +336,10 @@ impl RawProxyHandle {
         rx.recv().unwrap()
     }
 
+    /// Start the proxy.
     ///
+    /// This method will return immediately and call a given callback when the
+    /// proxy is ready.
     fn start_async<T, F>(builder: ProxyBuilder, request_handler: T, cb: F)
     where
         T: RequestHandler + Send + Sync + 'static,
@@ -365,17 +357,17 @@ impl RawProxyHandle {
         })
     }
 
-    ///
+    /// Stop the proxy asynchronously.
     fn stop(&self, timeout: Duration) {
         self.context.lock().unwrap().stop(timeout);
     }
 
-    ///
+    /// Abort the proxy.
     fn abort(&self) {
         self.context.lock().unwrap().abort();
     }
 
-    ///
+    /// Block the current thread until the proxy has stopped.
     fn join(&self) -> Result<(), Error> {
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -389,7 +381,7 @@ impl RawProxyHandle {
         }
     }
 
-    ///
+    /// Call a given callback when the proxy has stopped.
     fn join_async<F>(&self, cb: F)
     where
         F: FnOnce(Result<(), Error>) + Send + 'static,
@@ -398,13 +390,13 @@ impl RawProxyHandle {
     }
 }
 
-///
+/// Create a new proxy configuration.
 #[no_mangle]
 extern "C" fn gcdp__proxy_config__new() -> *mut ProxyConfig {
     Box::into_raw(Box::new(ProxyConfig::new()))
 }
 
-///
+/// Set proxy hostname.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy_config__set_hostname(
     config: *mut ProxyConfig,
@@ -421,7 +413,9 @@ unsafe extern "C" fn gcdp__proxy_config__set_hostname(
     0
 }
 
+/// Add HTTP binding.
 ///
+/// The addr should be a C-string representing an IPv4/IPv6 address.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy_config__add_http_bind_addr(
     config: *mut ProxyConfig,
@@ -437,7 +431,9 @@ unsafe extern "C" fn gcdp__proxy_config__add_http_bind_addr(
     0
 }
 
+/// Add HTTPS binding.
 ///
+/// The addr should be a C-string representing an IPv4/IPv6 address.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy_config__add_https_bind_addr(
     config: *mut ProxyConfig,
@@ -453,7 +449,7 @@ unsafe extern "C" fn gcdp__proxy_config__add_https_bind_addr(
     0
 }
 
-///
+/// Use Let's encrypt to generate a TLS key and a certificate.
 #[no_mangle]
 extern "C" fn gcdp__proxy_config__use_lets_encrypt(config: *mut ProxyConfig) {
     let config = unsafe { &mut *config };
@@ -461,7 +457,9 @@ extern "C" fn gcdp__proxy_config__use_lets_encrypt(config: *mut ProxyConfig) {
     config.tls_mode = TlsMode::LetsEncrypt;
 }
 
+/// Use a given TLS identity.
 ///
+/// The key and certificate chain must be in PEM format.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy_config__set_tls_identity(
     config: *mut ProxyConfig,
@@ -478,7 +476,10 @@ unsafe extern "C" fn gcdp__proxy_config__set_tls_identity(
     config.tls_mode = TlsMode::Simple(key.to_vec(), cert.to_vec());
 }
 
+/// Use a given device request handler.
 ///
+/// The handler and the context must be thread-safe and they must remain valid
+/// for the whole lifetime of the proxy.
 #[no_mangle]
 extern "C" fn gcdp__proxy_config__set_device_handler(
     config: *mut ProxyConfig,
@@ -491,7 +492,10 @@ extern "C" fn gcdp__proxy_config__set_device_handler(
     config.handler.handle_device = handler;
 }
 
+/// Use a given client request handler.
 ///
+/// The handler and the context must be thread-safe and they must remain valid
+/// for the whole lifetime of the proxy.
 #[no_mangle]
 extern "C" fn gcdp__proxy_config__set_client_handler(
     config: *mut ProxyConfig,
@@ -504,13 +508,15 @@ extern "C" fn gcdp__proxy_config__set_client_handler(
     config.handler.handle_client = handler;
 }
 
-///
+/// Free the configuration.
 #[no_mangle]
 extern "C" fn gcdp__proxy_config__free(config: *mut ProxyConfig) {
     unsafe { super::free(config) }
 }
 
+/// Create a new proxy form a given configuration.
 ///
+/// The function will block the current thread until the proxy is available.
 #[no_mangle]
 extern "C" fn gcdp__proxy__new(config: *const ProxyConfig) -> *mut RawProxyHandle {
     let config = unsafe { &*config };
@@ -526,7 +532,10 @@ extern "C" fn gcdp__proxy__new(config: *const ProxyConfig) -> *mut RawProxyHandl
     Box::into_raw(Box::new(handle))
 }
 
+/// Create a new proxy from a given configuration.
 ///
+/// The function will return immediately and notify a given callback once the
+/// proxy is available.
 #[no_mangle]
 extern "C" fn gcdp__proxy__new_async(
     config: *const ProxyConfig,
@@ -562,7 +571,9 @@ extern "C" fn gcdp__proxy__new_async(
     });
 }
 
+/// Stop the proxy.
 ///
+/// This function is asynchronous.
 #[no_mangle]
 extern "C" fn gcdp__proxy__stop(proxy: *mut RawProxyHandle, timeout: u32) {
     let handle = unsafe { &*proxy };
@@ -570,7 +581,9 @@ extern "C" fn gcdp__proxy__stop(proxy: *mut RawProxyHandle, timeout: u32) {
     handle.stop(Duration::from_millis(timeout as u64));
 }
 
+/// Abort the proxy.
 ///
+/// This function is asynchronous.
 #[no_mangle]
 extern "C" fn gcdp__proxy__abort(proxy: *mut RawProxyHandle) {
     let handle = unsafe { &*proxy };
@@ -578,7 +591,7 @@ extern "C" fn gcdp__proxy__abort(proxy: *mut RawProxyHandle) {
     handle.abort();
 }
 
-///
+/// Block the current thread until the proxy has stopped.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy__join(proxy: *mut RawProxyHandle) -> c_int {
     let handle = &*proxy;
@@ -588,7 +601,7 @@ unsafe extern "C" fn gcdp__proxy__join(proxy: *mut RawProxyHandle) -> c_int {
     0
 }
 
-///
+/// Notify a given callback when the proxy stops.
 #[no_mangle]
 unsafe extern "C" fn gcdp__proxy__join_async(
     proxy: *mut RawProxyHandle,
@@ -611,13 +624,14 @@ unsafe extern "C" fn gcdp__proxy__join_async(
     });
 }
 
-///
+/// Free the proxy.
 #[no_mangle]
 extern "C" fn gcdp__proxy__free(proxy: *mut RawProxyHandle) {
     unsafe { super::free(proxy) }
 }
 
-///
+/// Set the device handler result to "accept" indicating that the proxy should
+/// accept the device connection.
 ///
 /// The function takes ownership of the sender.
 #[no_mangle]
@@ -629,7 +643,8 @@ extern "C" fn gcdp__device_handler_result__accept(
     let _ = tx.send(Ok(DeviceHandlerResult::Accept));
 }
 
-///
+/// Set the device handler result to "unauthorized" indicating that the proxy
+/// should reject the device connection.
 ///
 /// The function takes ownership of the sender.
 #[no_mangle]
@@ -641,7 +656,8 @@ extern "C" fn gcdp__device_handler_result__unauthorized(
     let _ = tx.send(Ok(DeviceHandlerResult::Unauthorized));
 }
 
-///
+/// Set the device handler result to "redirect" indicating that the proxy
+/// should redirect the device to a given location.
 ///
 /// The function takes ownership of the sender.
 #[no_mangle]
@@ -662,7 +678,8 @@ unsafe extern "C" fn gcdp__device_handler_result__redirect(
     0
 }
 
-///
+/// Set the device handler result to "error" indicating that the handler is not
+/// able to handle the request.
 ///
 /// The function takes ownership of the sender.
 #[no_mangle]
@@ -679,7 +696,8 @@ unsafe extern "C" fn gcdp__device_handler_result__error(
     0
 }
 
-///
+/// Set the client handler result to "forward" indicating that the proxy should
+/// forward the client request to device with a given ID.
 ///
 /// The function takes ownership of the request and the sender.
 #[no_mangle]
@@ -707,7 +725,8 @@ unsafe extern "C" fn gcdp__client_handler_result__forward(
     0
 }
 
-///
+/// Set the client handler result to "block" indicating that the proxy should
+/// block the client request and return a given response instead.
 ///
 /// The function takes ownership of the response and the sender.
 #[no_mangle]
@@ -728,7 +747,8 @@ unsafe extern "C" fn gcdp__client_handler_result__block(
     0
 }
 
-///
+/// Set the client handler result to "error" indicating that the handler is not
+/// able to handle the request.
 ///
 /// The function takes ownership of the sender.
 #[no_mangle]
@@ -745,7 +765,15 @@ unsafe extern "C" fn gcdp__client_handler_result__error(
     0
 }
 
+/// Get device ID from a given authorization object.
 ///
+/// The device ID will be copied into a given buffer (unless it is NULL).
+/// The size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the device ID.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 unsafe extern "C" fn gcdp__authorization__get_device_id(
     authorization: *const BasicAuthorization,
@@ -757,7 +785,15 @@ unsafe extern "C" fn gcdp__authorization__get_device_id(
     *size = super::str_to_cstr(authorization.username(), buffer, *size);
 }
 
+/// Get device key from a given authorization object.
 ///
+/// The device key will be copied into a given buffer (unless it is NULL).
+/// The size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the device key.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 unsafe extern "C" fn gcdp__authorization__get_device_key(
     authorization: *const BasicAuthorization,
@@ -769,7 +805,8 @@ unsafe extern "C" fn gcdp__authorization__get_device_key(
     *size = super::str_to_cstr(authorization.password(), buffer, *size);
 }
 
-///
+/// Helper function for constructing a socket address from a given C-string and
+/// port.
 unsafe fn raw_addr_to_socket_addr(addr: *const c_char, port: u16) -> Result<SocketAddr, Error> {
     let addr: IpAddr = super::cstr_to_str(addr)
         .transpose()

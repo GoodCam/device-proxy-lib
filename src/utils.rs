@@ -8,7 +8,7 @@ use std::{
 use futures::FutureExt;
 use tokio::task::{JoinError, JoinHandle};
 
-///
+/// Task join handle that will abort the task when dropped.
 pub struct AbortOnDrop<T> {
     inner: JoinHandle<T>,
 }

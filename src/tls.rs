@@ -20,7 +20,7 @@ use crate::{
     Error,
 };
 
-///
+/// TLS mode.
 pub enum TlsMode {
     None,
     Simple(Identity),
@@ -28,7 +28,10 @@ pub enum TlsMode {
 }
 
 impl TlsMode {
+    /// Create a new ACME account.
     ///
+    /// The method will create a new ACME account only if the TLS mode is set
+    /// to `LetsEncrypt`. In all other cases it will return `Ok(None)`.
     pub async fn create_acme_account(&self) -> Result<Option<Account>, Error> {
         if matches!(self, Self::LetsEncrypt) {
             let account = acme::Client::new()
@@ -44,7 +47,15 @@ impl TlsMode {
         }
     }
 
+    /// Create a new TLS acceptor.
     ///
+    /// The method will create a new TLS acceptor only if the TLS mode is set
+    /// to `Simple(_)` or `LetsEncrypt`. In all other cases it will return
+    /// `Ok(None)`.
+    ///
+    /// If the TLS mode is set to `LetsEncrypt` the returned acceptor will be
+    /// a dummy rejecting all incoming connections. The acceptor must be later
+    /// updated using an ACME account to accept incoming TLS connections.
     pub fn create_tls_acceptor(self) -> Result<Option<TlsAcceptor>, Error> {
         match self {
             Self::None => Ok(None),
@@ -58,21 +69,23 @@ impl TlsMode {
     }
 }
 
-///
+/// TLS acceptor.
 #[derive(Clone)]
 pub struct TlsAcceptor {
     inner: Arc<Mutex<Option<Arc<tokio_native_tls::TlsAcceptor>>>>,
 }
 
 impl TlsAcceptor {
+    /// Create a new acceptor dummy.
     ///
+    /// The acceptor will reject all incoming connections.
     pub fn dummy() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
         }
     }
 
-    ///
+    /// Create a new TLS acceptor with a given TLS identity.
     pub fn new(identity: Identity) -> Result<Self, Error> {
         let acceptor = native_tls::TlsAcceptor::new(identity)?;
 
@@ -83,7 +96,7 @@ impl TlsAcceptor {
         Ok(res)
     }
 
-    ///
+    /// Set the TLS acceptor identity.
     pub fn set_identity(&self, identity: Identity) -> Result<(), Error> {
         let acceptor = native_tls::TlsAcceptor::new(identity)?;
 
@@ -94,7 +107,7 @@ impl TlsAcceptor {
         Ok(())
     }
 
-    ///
+    /// Accept a given incoming connection.
     pub fn accept<S>(&self, stream: S) -> impl Future<Output = io::Result<TlsStream<S>>>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -111,7 +124,7 @@ impl TlsAcceptor {
     }
 }
 
-///
+/// Generate a new TLS key.
 pub fn generate_tls_key() -> Result<PKey<Private>, Error> {
     let ec_group = EcGroup::from_curve_name(Nid::SECP384R1)?;
     let ec_key = EcKey::generate(&ec_group)?;
@@ -120,7 +133,7 @@ pub fn generate_tls_key() -> Result<PKey<Private>, Error> {
     Ok(key)
 }
 
-///
+/// Create a new CSR for a given key.
 pub fn create_csr<T>(key: &PKeyRef<T>, hostname: &str) -> Result<Vec<u8>, Error>
 where
     T: HasPrivate + HasPublic,

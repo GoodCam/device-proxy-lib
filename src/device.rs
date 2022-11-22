@@ -21,21 +21,21 @@ use hyper::{upgrade::Upgraded, Body, Request, Response};
 
 use crate::{response, Error};
 
-///
+/// Device manager.
 #[derive(Clone)]
 pub struct DeviceManager {
     devices: Arc<Mutex<HashMap<String, DeviceHandle>>>,
 }
 
 impl DeviceManager {
-    ///
+    /// Create a new device manager.
     pub fn new() -> Self {
         Self {
             devices: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    ///
+    /// Add a given device.
     pub fn add(&self, device_id: &str, handle: DeviceHandle) -> Option<DeviceHandle> {
         self.devices
             .lock()
@@ -43,12 +43,12 @@ impl DeviceManager {
             .insert(device_id.to_string(), handle)
     }
 
-    ///
+    /// Remove device with a given ID.
     pub fn remove(&self, device_id: &str) -> Option<DeviceHandle> {
         self.devices.lock().unwrap().remove(device_id)
     }
 
-    ///
+    /// Get device with a given ID.
     pub fn get(&self, device_id: &str) -> Option<DeviceHandle> {
         self.devices.lock().unwrap().get(device_id).cloned()
     }

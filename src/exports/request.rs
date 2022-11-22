@@ -10,10 +10,10 @@ use hyper::{
 };
 use libc::EINVAL;
 
-///
+/// Header field iterator.
 type RawHeaderIter<'a> = Peekable<HeaderIter<'a, HeaderValue>>;
 
-///
+/// Get the request method.
 #[no_mangle]
 extern "C" fn gcdp__request__get_method(request: *const Request<Body>) -> *const c_char {
     let request = unsafe { &*request };
@@ -34,7 +34,15 @@ extern "C" fn gcdp__request__get_method(request: *const Request<Body>) -> *const
     res.as_ptr() as _
 }
 
+/// Get the request URI.
 ///
+/// The request URI will be copied into a given buffer (unless it is NULL). The
+/// size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the request URI.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 extern "C" fn gcdp__request__get_uri(
     request: *const Request<Body>,
@@ -50,7 +58,15 @@ extern "C" fn gcdp__request__get_uri(
     }
 }
 
+/// Get value of the first header field with a given name (ignoring case).
 ///
+/// The header value will be copied into a given buffer (unless it is NULL).
+/// The size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the header value.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 unsafe extern "C" fn gcdp__request__get_header_value(
     request: *const Request<Body>,
@@ -77,7 +93,7 @@ unsafe extern "C" fn gcdp__request__get_header_value(
     0
 }
 
-///
+/// Get iterator over the header fields.
 #[no_mangle]
 extern "C" fn gcdp__request__get_header_iter<'a>(
     request: *const Request<Body>,
@@ -95,13 +111,21 @@ extern "C" fn gcdp__request__get_header_iter<'a>(
     }
 }
 
-///
+/// Free the request.
 #[no_mangle]
 extern "C" fn gcdp__request__free(request: *mut Request<Body>) {
     unsafe { super::free(request) }
 }
 
+/// Get name of the current header field.
 ///
+/// The header name will be copied into a given buffer (unless it is NULL).
+/// The size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the header name.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 unsafe extern "C" fn gcdp__header_iter__get_name(
     iter: *mut RawHeaderIter<'_>,
@@ -115,7 +139,15 @@ unsafe extern "C" fn gcdp__header_iter__get_name(
     *size = super::str_to_cstr(name.as_str(), buffer, *size);
 }
 
+/// Get value of the current header field.
 ///
+/// The header value will be copied into a given buffer (unless it is NULL).
+/// The size parameter is expected to contain the buffer capacity and after the
+/// function returns, it will contain the original length of the header value.
+/// The size cannot be NULL.
+///
+/// The string copied into the buffer may be truncated but it will be always
+/// null-terminated.
 #[no_mangle]
 unsafe extern "C" fn gcdp__header_iter__get_value(
     iter: *mut RawHeaderIter<'_>,
@@ -129,7 +161,10 @@ unsafe extern "C" fn gcdp__header_iter__get_value(
     *size = super::bstr_to_cstr(value.as_bytes(), buffer, *size);
 }
 
+/// Advance the iterator.
 ///
+/// The function will free the iterator and return `NULL` if there are no more
+/// headers.
 #[no_mangle]
 extern "C" fn gcdp__header_iter__next(iter: *mut RawHeaderIter<'_>) -> *mut RawHeaderIter<'_> {
     let iter = unsafe { &mut *iter };
@@ -152,7 +187,7 @@ extern "C" fn gcdp__header_iter__next(iter: *mut RawHeaderIter<'_>) -> *mut RawH
     ptr::null_mut()
 }
 
-///
+/// Free the iterator.
 #[no_mangle]
 extern "C" fn gcdp__header_iter__free(iter: *mut RawHeaderIter<'_>) {
     unsafe { super::free(iter) }

@@ -6,7 +6,7 @@ use std::{
 
 use hyper::{Body, Response};
 
-///
+/// Error type.
 #[derive(Debug)]
 pub struct Error {
     msg: Cow<'static, str>,
@@ -14,18 +14,7 @@ pub struct Error {
 }
 
 impl Error {
-    /*///
-    pub fn new<T>(msg: T) -> Self
-    where
-        T: ToString,
-    {
-        Self {
-            msg: Cow::Owned(msg.to_string()),
-            cause: None,
-        }
-    }*/
-
-    ///
+    /// Create a new error with a given error message.
     pub fn from_msg<T>(msg: T) -> Self
     where
         T: ToString,
@@ -36,7 +25,7 @@ impl Error {
         }
     }
 
-    ///
+    /// Create a new error with a given error message.
     pub fn from_static_msg(msg: &'static str) -> Self {
         Self {
             msg: Cow::Borrowed(msg),
@@ -44,7 +33,7 @@ impl Error {
         }
     }
 
-    ///
+    /// Create a new error from a given cause.
     pub fn from_cause<C>(cause: C) -> Self
     where
         C: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -55,7 +44,19 @@ impl Error {
         }
     }
 
-    ///
+    /// Create a new error with a given error message and cause.
+    pub fn from_msg_and_cause<T, C>(msg: T, cause: C) -> Self
+    where
+        T: ToString,
+        C: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self {
+            msg: Cow::Owned(msg.to_string()),
+            cause: Some(cause.into()),
+        }
+    }
+
+    /// Create a new error with a given error message and cause.
     pub fn from_static_msg_and_cause<C>(msg: &'static str, cause: C) -> Self
     where
         C: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -121,20 +122,20 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-///
+/// Helper trait for transforming objects into HTTP responses.
 pub trait ToResponse {
-    ///
+    /// Create an HTTP response.
     fn to_response(&self) -> Response<Body>;
 }
 
-///
+/// Error that can be converted into an HTTP response.
 #[derive(Debug)]
 pub struct HttpError {
     inner: InnerHttpError,
 }
 
 impl HttpError {
-    ///
+    /// Create an HTTP response (if possible).
     pub fn to_response(&self) -> Option<Response<Body>> {
         if let InnerHttpError::WithResponse(err) = &self.inner {
             Some(err.to_response())
@@ -182,48 +183,19 @@ where
     }
 }
 
-///
+/// Helper trait.
 trait ErrorWithResponse: std::error::Error + ToResponse {}
 
 impl<T> ErrorWithResponse for T where T: std::error::Error + ToResponse {}
 
-///
+/// HTTP error variants.
 #[derive(Debug)]
 enum InnerHttpError {
     WithResponse(Box<dyn ErrorWithResponse + Send + Sync>),
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
-/*///
-#[derive(Debug, Clone)]
-pub struct BadRequest {
-    msg: Cow<'static, str>,
-}
-
-impl BadRequest {
-    ///
-    pub fn from_static_msg(msg: &'static str) -> Self {
-        Self {
-            msg: Cow::Borrowed(msg),
-        }
-    }
-}
-
-impl Display for BadRequest {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "bad request: {}", self.msg)
-    }
-}
-
-impl std::error::Error for BadRequest {}
-
-impl ToResponse for BadRequest {
-    fn to_response(&self) -> Response<Body> {
-        crate::response::bad_request(&self.msg)
-    }
-}*/
-
-///
+/// Unauthorized access error.
 #[derive(Debug, Copy, Clone)]
 pub struct Unauthorized;
 
@@ -241,7 +213,7 @@ impl ToResponse for Unauthorized {
     }
 }
 
-///
+/// Bad gateway error.
 #[derive(Debug, Copy, Clone)]
 pub struct BadGateway;
 

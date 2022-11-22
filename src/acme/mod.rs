@@ -22,10 +22,12 @@ pub use self::{
     watchdog::Watchdog,
 };
 
-//pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+// Use this directory when testing the ACME client:
+// pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
 pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
-///
+/// ACME directory.
 #[derive(Clone)]
 pub struct Directory {
     client: DirectoryClient,
@@ -34,7 +36,11 @@ pub struct Directory {
 }
 
 impl Directory {
+    /// Create a new ACME account.
     ///
+    /// # Arguments
+    /// * `contact` - optional contact URI of the account owner (e.g.
+    ///   `mailto:my@email.com`)
     pub async fn new_account(&self, contact: Option<&str>) -> Result<Account, Error> {
         let mut contacts = Vec::new();
 
@@ -74,7 +80,7 @@ impl Directory {
     }
 }
 
-///
+/// ACME account.
 #[derive(Clone)]
 pub struct Account {
     client: AccountClient,
@@ -82,7 +88,7 @@ pub struct Account {
 }
 
 impl Account {
-    ///
+    /// Create a new order.
     pub async fn new_order(&self, hostname: &str) -> Result<Order, Error> {
         let payload = serde_json::json!({
             "identifiers": [
@@ -135,7 +141,13 @@ impl Account {
         Ok(res)
     }
 
+    /// Close a given order.
     ///
+    /// # Arguments
+    /// * `order` - the order to be finalized/closed
+    /// * `authorized` - a future that will be resolved when the corresponding
+    ///   challenges have been authorized by the ACME service
+    /// * `csr` - a CSR
     pub async fn close_order<F>(
         &self,
         order: &Order,
@@ -167,7 +179,7 @@ impl Account {
         self.finalize_order(order, csr).await
     }
 
-    ///
+    /// Get authorization.
     async fn get_authorization(
         &self,
         authorization_url: &str,
@@ -181,7 +193,7 @@ impl Account {
         Ok(response)
     }
 
-    ///
+    /// Confirm a given HTTP challenge.
     async fn confirm_http_challenge(&self, challenge_url: &str) -> Result<(), Error> {
         let payload = serde_json::json!({});
 
@@ -192,7 +204,7 @@ impl Account {
         Ok(())
     }
 
-    ///
+    /// Finalize a given order and download the issued certificate.
     async fn finalize_order(&self, order: &Order, csr: &[u8]) -> Result<Bytes, Error> {
         let payload = serde_json::json!({
             "csr": utils::base64url(csr),
@@ -227,7 +239,7 @@ impl Account {
         self.download_certificate(certificate_url).await
     }
 
-    ///
+    /// Download a given certificate.
     async fn download_certificate(&self, certificate_url: &str) -> Result<Bytes, Error> {
         let response = self.client.get(certificate_url).await?;
 
@@ -239,7 +251,7 @@ impl Account {
     }
 }
 
-///
+/// Order.
 pub struct Order {
     http_challenge: Challenge,
     order_url: String,
@@ -249,26 +261,26 @@ pub struct Order {
 }
 
 impl Order {
-    ///
+    /// Get the HTTP challenge.
     pub fn challenge(&self) -> &Challenge {
         &self.http_challenge
     }
 }
 
-///
+/// Response to a `newAccount` request.
 #[derive(Deserialize)]
 struct NewAccountResponse<'a> {
     status: &'a str,
 }
 
-///
+/// Response to a `newOrder` request.
 #[derive(Deserialize)]
 struct NewOrderResponse {
     authorizations: Vec<String>,
     finalize: String,
 }
 
-///
+/// Order status response.
 #[derive(Deserialize)]
 struct OrderStatusResponse<'a> {
     status: &'a str,
@@ -276,14 +288,14 @@ struct OrderStatusResponse<'a> {
     certificate: Option<&'a str>,
 }
 
-///
+/// Authorization response.
 #[derive(Deserialize)]
 struct AuthorizationResponse {
     status: String,
     challenges: Vec<ChallengeEntry>,
 }
 
-///
+/// Challenge entry.
 #[derive(Deserialize)]
 struct ChallengeEntry {
     #[serde(rename = "type")]

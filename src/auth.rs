@@ -1,10 +1,12 @@
+//! Authorization types.
+
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     str::FromStr,
 };
 
-///
+/// Invalid authorization header.
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidAuthorizationHeader;
 
@@ -16,14 +18,15 @@ impl Display for InvalidAuthorizationHeader {
 
 impl Error for InvalidAuthorizationHeader {}
 
-///
+/// Basic authorization header.
 pub struct BasicAuthorization {
     username: String,
     password: String,
 }
 
 impl BasicAuthorization {
-    ///
+    /// Create a new Basic authorization header containing a given username and
+    /// password.
     pub fn new<T, U>(username: T, password: U) -> Self
     where
         T: ToString,
@@ -35,12 +38,12 @@ impl BasicAuthorization {
         }
     }
 
-    ///
+    /// Get the username.
     pub fn username(&self) -> &str {
         &self.username
     }
 
-    ///
+    /// Get the password.
     pub fn password(&self) -> &str {
         &self.password
     }

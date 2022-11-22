@@ -14,7 +14,7 @@ use crate::{
     tls::{self, TlsAcceptor},
 };
 
-///
+/// ACME watchdog that will keep the given TLS identity up to date.
 pub struct Watchdog {
     key: Arc<PKey<Private>>,
     key_pem: Vec<u8>,
@@ -25,7 +25,7 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    ///
+    /// Create a new watchdog.
     pub async fn new<T>(
         account: Account,
         challenges: ChallengeRegistrations,
@@ -54,7 +54,7 @@ impl Watchdog {
         Ok(res)
     }
 
-    ///
+    /// Run the watchdog.
     pub async fn watch(self) {
         loop {
             let renew = self.renew_certificate();
@@ -72,7 +72,7 @@ impl Watchdog {
         }
     }
 
-    ///
+    /// Renew the TLS certificate.
     async fn renew_certificate(&self) -> Result<Duration, Error> {
         let chain = self.get_new_certificate().await?;
 
@@ -97,7 +97,7 @@ impl Watchdog {
         }
     }
 
-    ///
+    /// Get a new TLS certificate.
     async fn get_new_certificate(&self) -> Result<Bytes, Error> {
         let order = self.account.new_order(&self.hostname).await?;
 
@@ -127,7 +127,7 @@ impl Watchdog {
     }
 }
 
-///
+/// Helper struct that will remove a given registration when dropped.
 struct ChallengeRegistrationGuard<'a> {
     challenges: &'a ChallengeRegistrations,
     token: &'a str,

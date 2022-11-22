@@ -1,6 +1,8 @@
+//! Helpers for constructing HTTP responses.
+
 use hyper::{Body, Response};
 
-///
+/// Create a new HTTP response with a given status code and body.
 fn response_with_body<T>(status: u16, body: T) -> Response<Body>
 where
     T: Into<Body>,
@@ -11,20 +13,12 @@ where
         .unwrap()
 }
 
-/*///
-fn error_response<T>(status: u16, error: T) -> Response<Body>
-where
-    T: ToString,
-{
-    response_with_body(status, &ErrorResponse::new(error))
-}*/
-
 /// Create an empty HTTP response with a given status code.
 fn empty_response(status: u16) -> Response<Body> {
     response_with_body(status, Body::empty())
 }
 
-/// Create a Temporary Redirect response.
+/// Create a Temporary Redirect response with a given location header.
 pub fn temporary_redirect<T>(location: T) -> Response<Body>
 where
     T: ToString,
@@ -35,14 +29,6 @@ where
         .body(Body::empty())
         .unwrap()
 }
-
-/*/// Create a Bad Request response.
-pub fn bad_request<T>(msg: T) -> Response<Body>
-where
-    T: ToString,
-{
-    error_response(400, msg)
-}*/
 
 /// Create an Unauthorized response.
 pub fn unauthorized() -> Response<Body> {
@@ -58,29 +44,3 @@ pub fn internal_server_error() -> Response<Body> {
 pub fn bad_gateway() -> Response<Body> {
     empty_response(502)
 }
-
-/*///
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
-impl ErrorResponse {
-    ///
-    fn new<T>(msg: T) -> Self
-    where
-        T: ToString,
-    {
-        Self {
-            error: msg.to_string(),
-        }
-    }
-}
-
-impl From<&ErrorResponse> for Body {
-    fn from(response: &ErrorResponse) -> Self {
-        let body = serde_json::to_string(response);
-
-        Self::from(body.unwrap())
-    }
-}*/
