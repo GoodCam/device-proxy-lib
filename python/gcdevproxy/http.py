@@ -7,15 +7,19 @@ from .native import get_string, lib, NativeObject
 
 
 class Authorization(NativeObject):
+    """Device authorization."""
+
     def __init__(self, raw_ptr: c_void_p) -> None:
         super().__init__(raw_ptr, None)
 
     @property
-    def device_id(self):
+    def device_id(self) -> str:
+        """Device ID"""
         return get_string(lib.gcdp__authorization__get_device_id, self.raw_ptr)
 
     @property
-    def device_key(self):
+    def device_key(self) -> str:
+        """Device key"""
         return get_string(lib.gcdp__authorization__get_device_key, self.raw_ptr)
 
 
@@ -48,6 +52,27 @@ class NativeRequest(NativeObject):
 
 
 class Request:
+    """Client request.
+
+    .. py:attribute:: uri
+
+       Request URI.
+
+       :type: str
+
+    .. py:attribute:: method
+
+       HTTP method.
+
+       :type: str
+
+    .. py:attribute:: headers
+
+       HTTP headers.
+
+       :type: List[Tuple[str, str]]
+    """
+
     def __init__(self, raw_ptr: c_void_p) -> None:
         self.native = NativeRequest(raw_ptr)
 
@@ -64,6 +89,11 @@ class Request:
             self.header_map[lname].append(value)
 
     def get_header_value(self, name: str) -> Optional[str]:
+        """Get value of a given HTTP header (if present).
+
+        :param name: name of the header field
+        :returns: value of the first HTTP header field with a given name (ignoring case) or ``None``
+        """
         try:
             return self.header_map[name.lower()][0]
         except KeyError:
@@ -89,19 +119,52 @@ class NativeResponse(NativeObject):
 
 
 class Response:
+    """Custom client response.
+
+    .. py:attribute:: status_code
+
+       HTTP status code.
+
+       :type: int
+
+    .. py:attribute:: headers
+
+       HTTP headers.
+
+       :type: List[Tuple[str, str]]
+
+    .. py:attribute:: body
+
+       HTTP response body. The body must be a bytes object.
+
+       :type: bytes
+    """
+
     def __init__(self, status_code: int) -> None:
+        """Create a new response with empty body and a given status code.
+
+        :param status_code: HTTP status code
+        """
         self.status_code = status_code
-        self.headers: Dict[str, List[str]] = {}
+        self.headers: List[Tuple[str, str]] = []
         self.body = b''
 
     def append_header(self, name: str, value: str) -> None:
-        lname = name.lower()
-        if lname not in self.headers:
-            self.headers[lname] = []
-        self.headers[lname].append(value)
+        """Append a given HTTP header.
+
+        :param name: header name
+        :param value: header value
+        """
+        self.headers.append((name, value))
 
     def set_header(self, name: str, value: str) -> None:
-        self.headers[name.lower()] = [value]
+        """Replace all HTTP headers with a given name (ignoring case).
+
+        :param name: header name
+        :param value: header value
+        """
+        self.headers = [(n, v) for n, v in self.headers if n.lower() != name.lower()]
+        self.headers.append((name, value))
 
     def to_native(self) -> NativeResponse:
         if not (100 <= self.status_code < 600):

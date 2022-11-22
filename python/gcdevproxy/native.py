@@ -51,10 +51,6 @@ def get_string(native_function, *args):
 
 
 class DeviceProxyLib:
-    """
-    Loader for the device proxy lib.
-    """
-
     lib_name = 'gcdevproxy'
 
     min_version = (0, 1, 0)
