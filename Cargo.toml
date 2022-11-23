@@ -1,7 +1,16 @@
 [package]
 name = "gcdevproxy"
 version = "0.1.0"
+authors = ["GoodCam <dev@goodcam.io>"]
 edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/gcdevproxy/"
+repository = "https://github.com/GoodCam/device-proxy-lib"
+description = """
+GoodCam Device Proxy library
+"""
+keywords = ["network", "protocol", "library", "goodcam"]
 
 [lib]
 crate-type = ["lib", "cdylib"]
