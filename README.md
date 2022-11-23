@@ -7,6 +7,21 @@ can be configured to connect automatically to a given proxy. Once
 connected, the devices will wait for incoming HTTP requests. The proxy
 simply forwards incoming HTTP requests to the connected devices.
 
+## Dependencies
+
+The library requires OpenSSL (version 1.0.1 or newer) or LibreSSL (version 2.5
+or newer). Ubuntu/Debian users can install OpenSSL development files using:
+
+```bash
+sudo apt-get install libssl-dev
+```
+
+Fedora users can install them using:
+
+```bash
+sudo dnf install openssl-devel
+```
+
 ## Usage example
 
 See the `examples` directory in the root of this repository for a ready-to-use
