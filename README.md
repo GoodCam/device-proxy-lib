@@ -9,8 +9,8 @@ simply forwards incoming HTTP requests to the connected devices.
 
 ## Usage example
 
-See the `examples` directory in the root of this repository for a
-ready-to-use example.
+See the `examples` directory in the root of this repository for a ready-to-use
+example.
 
 ```rust
 use gcdevproxy::{
@@ -58,8 +58,3 @@ builder
 The library provides a C API which can be used also in other programming
 languages. See the `include` folder in the root of the repository for more
 details.
-
-Currently, we offer these bindings:
-
-* **C** - see the `include` folder in the root of the repository
-* **Python** - see the `python` folder in the root of the repository
