@@ -2,7 +2,7 @@
 
 This library simplifies creating HTTP proxies that can be used to communicate
 with GoodCam devices in various networks. GoodCam devices contain a
-[built-in client](https://goodcam.github.io/goodcam-api/#tag/cloud>) that
+[built-in client](https://goodcam.github.io/goodcam-api/#tag/cloud) that
 can be configured to connect automatically to a given proxy. Once
 connected, the devices will wait for incoming HTTP requests. The proxy
 simply forwards incoming HTTP requests to the connected devices.
