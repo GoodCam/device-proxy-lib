@@ -16,6 +16,12 @@ asynchronous API should be preferred due to a better performance. To use the
 asynchronous API, simply use the ``create_proxy`` and ``RequestHandler``
 equivalents from the ``gcdevproxy.aio`` module.
 
+Please keep in mind that **when using the blocking API, your request handler
+MUST be thread-safe!** The proxy runtime may call your handler from multiple
+threads at the same time. You don't have to worry about this when using the
+asynchronous API because your handler will be called only from the thread
+running the Python's asyncio event loop (usually the main thread).
+
 Asynchronous API
 ^^^^^^^^^^^^^^^^
 
