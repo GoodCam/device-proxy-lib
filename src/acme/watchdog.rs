@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use native_tls::Identity;
@@ -57,18 +60,36 @@ impl Watchdog {
     /// Run the watchdog.
     pub async fn watch(self) {
         loop {
-            let renew = self.renew_certificate();
+            info!("renewing TLS certificate");
 
-            let delay = match renew.await {
-                Ok(expires_in) => expires_in * 2 / 3,
-                Err(err) => {
-                    eprintln!("unable to renew certificate: {}", err);
+            let res = self.renew_certificate().await;
 
-                    Duration::from_secs(10)
+            if let Err(err) = &res {
+                warn!("unable to renew TLS certificate: {err}");
+            } else {
+                info!("TLS certificate renewed");
+            }
+
+            let delay = res
+                .map(|expires_in| expires_in * 2 / 3)
+                .unwrap_or_else(|_| Duration::from_secs(10));
+
+            info!("next TLS certificate renew in {:?}", delay);
+
+            let start = Instant::now();
+
+            loop {
+                let elapsed = start.elapsed();
+
+                if delay <= elapsed {
+                    break;
                 }
-            };
 
-            tokio::time::sleep(delay).await;
+                let remaining = delay - elapsed;
+
+                // sleep at most one hour at a time to avoid timer overflow
+                tokio::time::sleep(remaining.min(Duration::from_secs(3_600))).await;
+            }
         }
     }
 

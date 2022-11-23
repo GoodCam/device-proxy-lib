@@ -71,6 +71,7 @@ pub mod auth;
 
 use std::{
     future::Future,
+    io,
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
@@ -82,21 +83,23 @@ use std::{
 use futures::{
     channel::mpsc::{self, UnboundedSender},
     future::AbortHandle,
-    FutureExt, StreamExt,
+    FutureExt, StreamExt, TryFutureExt,
 };
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, Version};
 use native_tls::Identity;
+use uuid::Uuid;
 
 pub use async_trait;
 pub use hyper;
 pub use hyper::http;
 
 use self::{
+    acme::{ChallengeRegistrations, Watchdog},
     auth::BasicAuthorization,
     binding::{Bindings, Connection},
     device::{DeviceConnection, DeviceManager},
-    error::{BadGateway, HttpError, Unauthorized},
-    tls::TlsMode,
+    error::{HttpError, Unauthorized},
+    tls::{TlsAcceptor, TlsMode},
     utils::AbortOnDrop,
 };
 
@@ -319,32 +322,45 @@ impl ProxyBuilder {
 
     /// Build the proxy and use a given request handler to handle incoming
     /// connections.
-    pub async fn build<T>(self, request_handler: T) -> Result<Proxy, Error>
+    pub async fn build<T>(&self, request_handler: T) -> Result<Proxy, Error>
     where
         T: RequestHandler + Send + Sync + 'static,
     {
-        info!("Starting GoodCam device proxy");
-        info!("HTTP bindings: {:?}", self.http_bind_addresses);
-        info!("HTTPS bindings: {:?}", self.https_bind_addresses);
+        info!("starting GoodCam device proxy");
+
+        let res = self.build_inner(request_handler).await;
+
+        if let Err(err) = &res {
+            warn!("unable to start the proxy: {err}");
+        } else {
+            info!("proxy started");
+        }
+
+        res
+    }
+
+    /// Build the proxy and use a given request handler to handle incoming
+    /// connections.
+    async fn build_inner<T>(&self, request_handler: T) -> Result<Proxy, Error>
+    where
+        T: RequestHandler + Send + Sync + 'static,
+    {
+        let tls_acceptor = self.tls_mode.create_tls_acceptor()?;
+
+        let bindings = self.create_bindings(tls_acceptor.clone()).await?;
+
         info!("hostname: {}", self.hostname);
 
-        let acme_challenges = acme::ChallengeRegistrations::new();
-
-        let acme_account = self.tls_mode.create_acme_account().await?;
-        let tls_acceptor = self.tls_mode.create_tls_acceptor()?;
+        let acme_challenges = ChallengeRegistrations::new();
 
         let mut acme_watchdog = None;
 
-        if let Some(tls_acceptor) = tls_acceptor.as_ref() {
-            if let Some(acme_account) = acme_account {
-                let watchdog = acme::Watchdog::new(
-                    acme_account,
-                    acme_challenges.clone(),
-                    tls_acceptor.clone(),
-                    &self.hostname,
-                );
-
-                acme_watchdog = Some(watchdog.await?);
+        if let Some(tls_acceptor) = tls_acceptor {
+            if let Some(watchdog) = self
+                .create_acme_watchdog(tls_acceptor, acme_challenges.clone())
+                .await?
+            {
+                acme_watchdog = Some(watchdog);
             }
         }
 
@@ -354,16 +370,78 @@ impl ProxyBuilder {
             handler: request_handler.into(),
         };
 
+        let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded();
+
+        let server = self.create_proxy(bindings, handler, async move {
+            if shutdown_rx.next().await.is_none() {
+                futures::future::pending().await
+            }
+        });
+
+        self.start_proxy(server, shutdown_tx, acme_watchdog)
+    }
+
+    /// Create port bindings.
+    async fn create_bindings(&self, tls_acceptor: Option<TlsAcceptor>) -> io::Result<Bindings> {
+        let http_bind_addresses = self.http_bind_addresses.iter();
+        let https_bind_addresses = self.https_bind_addresses.iter();
+
         let mut bindings = Bindings::new();
 
-        bindings.add_tcp_bindings(self.http_bind_addresses).await?;
+        for binding in http_bind_addresses.clone() {
+            info!("HTTP binding: {binding}");
+        }
+
+        bindings
+            .add_tcp_bindings(http_bind_addresses.copied())
+            .await?;
 
         if let Some(acceptor) = tls_acceptor {
+            for binding in https_bind_addresses.clone() {
+                info!("HTTPS binding: {binding}");
+            }
+
             bindings
-                .add_tls_bindings(acceptor, self.https_bind_addresses)
+                .add_tls_bindings(acceptor, https_bind_addresses.copied())
                 .await?;
         }
 
+        Ok(bindings)
+    }
+
+    /// Create ACME watchdog (if configured).
+    async fn create_acme_watchdog(
+        &self,
+        tls_acceptor: TlsAcceptor,
+        challenge_registrations: ChallengeRegistrations,
+    ) -> Result<Option<Watchdog>, Error> {
+        if let Some(acme_account) = self.tls_mode.create_acme_account().await? {
+            let watchdog = Watchdog::new(
+                acme_account,
+                challenge_registrations,
+                tls_acceptor,
+                &self.hostname,
+            );
+
+            let res = watchdog.await?;
+
+            Ok(Some(res))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Create the proxy service.
+    fn create_proxy<T, F>(
+        &self,
+        mut bindings: Bindings,
+        handler: InternalRequestHandler<T>,
+        shutdown: F,
+    ) -> impl Future<Output = Result<(), Error>>
+    where
+        T: RequestHandler + Send + Sync + 'static,
+        F: Future,
+    {
         let incoming = hyper::server::accept::poll_fn(move |cx| bindings.poll_next_unpin(cx));
 
         let make_service = hyper::service::make_service_fn(move |connection: &Connection| {
@@ -386,20 +464,28 @@ impl ProxyBuilder {
             futures::future::ok::<_, hyper::Error>(service)
         });
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded();
-
-        let server = Server::builder(incoming)
+        Server::builder(incoming)
             .http1_keepalive(true)
             .http2_keep_alive_interval(Some(Duration::from_secs(120)))
             .http2_keep_alive_timeout(Duration::from_secs(20))
             .serve(make_service)
             .with_graceful_shutdown(async move {
-                if shutdown_rx.next().await.is_none() {
-                    futures::future::pending().await
-                }
-            });
+                let _ = shutdown.await;
+            })
+            .map_err(Error::from)
+    }
 
-        let (server, server_handle) = futures::future::abortable(server);
+    /// Start the proxy service.
+    fn start_proxy<F>(
+        &self,
+        proxy: F,
+        shutdown: UnboundedSender<()>,
+        acme_watchdog: Option<Watchdog>,
+    ) -> Result<Proxy, Error>
+    where
+        F: Future<Output = Result<(), Error>> + Send + 'static,
+    {
+        let (server, server_handle) = futures::future::abortable(proxy);
 
         let server = AbortOnDrop::from(tokio::spawn(server));
 
@@ -412,7 +498,7 @@ impl ProxyBuilder {
         let join = async move {
             let res = match server.await {
                 Ok(Ok(Ok(()))) => Ok(()),
-                Ok(Ok(Err(err))) => Err(err.into()),
+                Ok(Ok(Err(err))) => Err(err),
                 Ok(Err(_)) => Ok(()),
                 Err(_) => Ok(()),
             };
@@ -425,7 +511,7 @@ impl ProxyBuilder {
         };
 
         let handle = ProxyHandle {
-            shutdown: shutdown_tx,
+            shutdown,
             abort: server_handle,
         };
 
@@ -433,8 +519,6 @@ impl ProxyBuilder {
             join: Box::pin(join),
             handle,
         };
-
-        info!("Proxy started");
 
         Ok(proxy)
     }
@@ -516,7 +600,7 @@ where
                     return response;
                 }
 
-                eprintln!("internal server error: {}", err);
+                warn!("internal server error: {err}");
 
                 response::internal_server_error()
             })
@@ -545,27 +629,54 @@ where
         &self,
         request: Request<Body>,
     ) -> Result<Response<Body>, HttpError> {
+        let session_id = Uuid::new_v4();
+
+        info!("received device connection request (session_id: {session_id})");
+
         let authorization = request
             .headers()
             .get("authorization")
-            .ok_or(Unauthorized)?
-            .to_str()
-            .ok()
-            .map(BasicAuthorization::from_str)
+            .map(|auth| auth.to_str())
             .and_then(|res| res.ok())
-            .ok_or(Unauthorized)?;
+            .map(BasicAuthorization::from_str)
+            .and_then(|res| res.ok());
 
+        if authorization.is_none() {
+            warn!("unable to process device connection request (session_id: {session_id}): missing or invalid authorization header");
+        }
+
+        let authorization = authorization.ok_or(Unauthorized)?;
+
+        let res = self
+            .handle_device_request_inner(session_id, authorization, request)
+            .await;
+
+        if let Err(err) = &res {
+            warn!("unable to process device connection request (session_id: {session_id}): {err}");
+        }
+
+        res.map_err(HttpError::from)
+    }
+
+    /// Handle a given device request.
+    async fn handle_device_request_inner(
+        &self,
+        session_id: Uuid,
+        authorization: BasicAuthorization,
+        request: Request<Body>,
+    ) -> Result<Response<Body>, Error> {
         let device_id = String::from(authorization.username());
 
-        let ret = self.handler.handle_device_request(authorization).await?;
-
-        match ret {
+        match self.handler.handle_device_request(authorization).await? {
             DeviceHandlerResult::Accept => {
                 let this = self.clone();
 
                 tokio::spawn(async move {
-                    if let Err(err) = this.handle_device_connection(&device_id, request).await {
-                        eprintln!("unable to upgrade device connection: {}", err);
+                    if let Err(err) = this
+                        .handle_device_connection(&device_id, session_id, request)
+                        .await
+                    {
+                        warn!("unable to upgrade device connection (device_id: {device_id}, session_id: {session_id}): {err}");
                     }
                 });
 
@@ -577,8 +688,16 @@ where
 
                 Ok(res)
             }
-            DeviceHandlerResult::Unauthorized => Err(HttpError::from(Unauthorized)),
-            DeviceHandlerResult::Redirect(location) => Ok(response::temporary_redirect(location)),
+            DeviceHandlerResult::Unauthorized => {
+                info!("unauthorized device (device_id: {device_id}, session_id: {session_id})");
+
+                Ok(response::unauthorized())
+            }
+            DeviceHandlerResult::Redirect(location) => {
+                info!("redirecting device (device_id: {device_id}, session_id: {session_id}, location: {location})");
+
+                Ok(response::temporary_redirect(location))
+            }
         }
     }
 
@@ -586,25 +705,28 @@ where
     async fn handle_device_connection(
         &self,
         device_id: &str,
+        session_id: Uuid,
         request: Request<Body>,
     ) -> Result<(), Error> {
         let upgraded = hyper::upgrade::on(request).await?;
 
         let (connection, handle) = DeviceConnection::new(upgraded).await?;
 
-        if let Some(old) = self.devices.add(device_id, handle) {
+        if let Some(old) = self.devices.add(device_id, session_id, handle) {
             old.close();
         }
 
-        eprintln!("device connected");
+        info!("device connected (device_id: {device_id}, session_id: {session_id})");
 
         if let Err(err) = connection.await {
-            eprintln!("device connection error: {}", err);
+            warn!(
+                "device connection error (device_id: {device_id}, session_id: {session_id}): {err}"
+            );
         } else {
-            eprintln!("device disconnected");
+            info!("device disconnected (device_id: {device_id}, session_id: {session_id})");
         }
 
-        self.devices.remove(device_id);
+        self.devices.remove(device_id, Some(session_id));
 
         Ok(())
     }
@@ -614,19 +736,51 @@ where
         &self,
         request: Request<Body>,
     ) -> Result<Response<Body>, HttpError> {
-        let ret = self.handler.handle_client_request(request).await?;
+        let request_id = Uuid::new_v4();
 
-        match ret {
-            ClientHandlerResult::Block(response) => Ok(response),
-            ClientHandlerResult::Forward(device_id, request) => {
-                let response = self
-                    .devices
-                    .get(&device_id)
-                    .ok_or(BadGateway)?
-                    .send_request(request)
-                    .await;
+        let method = request.method();
+        let uri = request.uri();
+        let path = uri.path();
+
+        info!("received client {method} request at {path} (request_id: {request_id})");
+
+        let res = self.handle_client_request_inner(request_id, request).await;
+
+        if let Err(err) = &res {
+            warn!("unable to complete client request (request_id: {request_id}): {err}");
+        }
+
+        res.map_err(HttpError::from)
+    }
+
+    /// Handle a given client request.
+    async fn handle_client_request_inner(
+        &self,
+        request_id: Uuid,
+        request: Request<Body>,
+    ) -> Result<Response<Body>, Error> {
+        match self.handler.handle_client_request(request).await? {
+            ClientHandlerResult::Block(response) => {
+                info!("client request blocked (request_id: {request_id})");
 
                 Ok(response)
+            }
+            ClientHandlerResult::Forward(device_id, request) => {
+                if let Some(mut device) = self.devices.get(&device_id) {
+                    info!("forwarding client request (request_id: {request_id}, device_id: {device_id})");
+
+                    let response = device.send_request(request).await;
+
+                    let status = response.status();
+
+                    info!("forwarding device response (request_id: {request_id}, device_id: {device_id}, status: {status})");
+
+                    Ok(response)
+                } else {
+                    info!("unable to forward client request (request_id: {request_id}, device_id: {device_id}): device not connected");
+
+                    Ok(response::bad_gateway())
+                }
             }
         }
     }

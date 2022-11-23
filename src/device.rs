@@ -18,13 +18,14 @@ use h2::{
     RecvStream, SendStream,
 };
 use hyper::{upgrade::Upgraded, Body, Request, Response};
+use uuid::Uuid;
 
 use crate::{response, Error};
 
 /// Device manager.
 #[derive(Clone)]
 pub struct DeviceManager {
-    devices: Arc<Mutex<HashMap<String, DeviceHandle>>>,
+    devices: Arc<Mutex<HashMap<String, DeviceEntry>>>,
 }
 
 impl DeviceManager {
@@ -36,21 +37,65 @@ impl DeviceManager {
     }
 
     /// Add a given device.
-    pub fn add(&self, device_id: &str, handle: DeviceHandle) -> Option<DeviceHandle> {
+    pub fn add(
+        &self,
+        device_id: &str,
+        session_id: Uuid,
+        handle: DeviceHandle,
+    ) -> Option<DeviceHandle> {
         self.devices
             .lock()
             .unwrap()
-            .insert(device_id.to_string(), handle)
+            .insert(device_id.to_string(), DeviceEntry::new(session_id, handle))
+            .map(|old| old.into_handle())
     }
 
     /// Remove device with a given ID.
-    pub fn remove(&self, device_id: &str) -> Option<DeviceHandle> {
-        self.devices.lock().unwrap().remove(device_id)
+    pub fn remove(&self, device_id: &str, session_id: Option<Uuid>) -> Option<DeviceHandle> {
+        let mut devices = self.devices.lock().unwrap();
+
+        let entry = devices.get(device_id)?;
+
+        if let Some(session_id) = session_id {
+            if session_id != entry.session_id {
+                return None;
+            }
+        }
+
+        devices.remove(device_id).map(|entry| entry.into_handle())
     }
 
     /// Get device with a given ID.
     pub fn get(&self, device_id: &str) -> Option<DeviceHandle> {
-        self.devices.lock().unwrap().get(device_id).cloned()
+        self.devices
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .map(|entry| entry.handle())
+            .cloned()
+    }
+}
+
+/// Device manager entry.
+struct DeviceEntry {
+    session_id: Uuid,
+    handle: DeviceHandle,
+}
+
+impl DeviceEntry {
+    /// Create a new device manager entry.
+    fn new(session_id: Uuid, handle: DeviceHandle) -> Self {
+        Self { session_id, handle }
+    }
+
+    /// Get the device handle.
+    fn handle(&self) -> &DeviceHandle {
+        &self.handle
+    }
+
+    /// Get the device handle.
+    fn into_handle(self) -> DeviceHandle {
+        self.handle
     }
 }
 
@@ -175,7 +220,7 @@ impl DeviceRequest {
 
         tokio::spawn(async move {
             if let Err(err) = SendBody::new(body, body_tx).await {
-                eprintln!("unable to send request body: {}", err);
+                warn!("unable to send request body: {err}");
             }
         });
 

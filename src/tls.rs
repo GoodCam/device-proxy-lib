@@ -56,11 +56,11 @@ impl TlsMode {
     /// If the TLS mode is set to `LetsEncrypt` the returned acceptor will be
     /// a dummy rejecting all incoming connections. The acceptor must be later
     /// updated using an ACME account to accept incoming TLS connections.
-    pub fn create_tls_acceptor(self) -> Result<Option<TlsAcceptor>, Error> {
+    pub fn create_tls_acceptor(&self) -> Result<Option<TlsAcceptor>, Error> {
         match self {
             Self::None => Ok(None),
             Self::Simple(identity) => {
-                let acceptor = TlsAcceptor::new(identity)?;
+                let acceptor = TlsAcceptor::new(identity.clone())?;
 
                 Ok(Some(acceptor))
             }
