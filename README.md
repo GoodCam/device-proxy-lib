@@ -72,4 +72,6 @@ builder
 
 The library provides a C API which can be used also in other programming
 languages. See the `include` folder in the root of the repository for more
-details.
+details. Currently we also provide wrapper libraries for:
+
+* [Python](https://github.com/GoodCam/device-proxy-lib-python)
