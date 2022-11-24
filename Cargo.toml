@@ -1,6 +1,6 @@
 [package]
 name = "gcdevproxy"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["GoodCam <dev@goodcam.io>"]
 edition = "2021"
 readme = "README.md"
