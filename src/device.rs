@@ -5,18 +5,16 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use futures::{
     channel::{mpsc, oneshot},
-    future::{AbortHandle, Abortable},
+    future::{AbortHandle, Abortable, Either},
     ready, FutureExt, SinkExt, Stream, StreamExt,
 };
-use h2::{
-    client::{Connection, SendRequest},
-    RecvStream, SendStream,
-};
+use h2::{client::SendRequest, Ping, PingPong, RecvStream, SendStream};
 use hyper::{upgrade::Upgraded, Body, Request, Response};
 use uuid::Uuid;
 
@@ -99,19 +97,49 @@ impl DeviceEntry {
     }
 }
 
+const PING_INTERVAL: Duration = Duration::from_secs(10);
+const PONG_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Typle alias.
+type Connection = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+
 /// Future representing a device connection.
 ///
 /// The future will be resolved when the corresponding connection gets closed.
 pub struct DeviceConnection {
-    connection: Abortable<Connection<Upgraded, Bytes>>,
+    connection: Abortable<Connection>,
 }
 
 impl DeviceConnection {
     /// Create a new device connection.
     pub async fn new(connection: Upgraded) -> Result<(Self, DeviceHandle), Error> {
-        let (h2, connection) = h2::client::handshake(connection).await?;
+        let (h2, mut connection) = h2::client::handshake(connection).await?;
 
-        // TODO: ping pong
+        let ping_pong = connection
+            .ping_pong()
+            .expect("unable to get connection ping-pong");
+
+        let keep_alive = KeepAlive::new(ping_pong, PING_INTERVAL, PONG_TIMEOUT);
+
+        let connection: Connection = Box::pin(async move {
+            let keep_alive = keep_alive.run();
+
+            futures::pin_mut!(connection);
+            futures::pin_mut!(keep_alive);
+
+            let select = futures::future::select(connection, keep_alive);
+
+            match select.await {
+                Either::Left((res, _)) => res.map_err(Error::from),
+                Either::Right((res, connection)) => {
+                    if res.is_err() {
+                        res
+                    } else {
+                        connection.await.map_err(Error::from)
+                    }
+                }
+            }
+        });
 
         let (connection, abort) = futures::future::abortable(connection);
 
@@ -137,7 +165,7 @@ impl Future for DeviceConnection {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = match ready!(self.connection.poll_unpin(cx)) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err.into()),
+            Ok(Err(err)) => Err(err),
             Err(_) => Ok(()),
         };
 
@@ -166,6 +194,53 @@ impl DeviceHandle {
     /// Close the connection.
     pub fn close(&self) {
         self.abort.abort();
+    }
+}
+
+/// Keep-alive handler.
+struct KeepAlive {
+    inner: PingPong,
+    interval: Duration,
+    timeout: Duration,
+}
+
+impl KeepAlive {
+    /// Create a new keep-alive handler.
+    fn new(ping_pong: PingPong, interval: Duration, timeout: Duration) -> Self {
+        Self {
+            inner: ping_pong,
+            interval,
+            timeout,
+        }
+    }
+
+    /// Run the handler.
+    async fn run(mut self) -> Result<(), Error> {
+        let mut next_ping = Instant::now() + self.interval;
+
+        loop {
+            tokio::time::sleep_until(next_ping.into()).await;
+
+            next_ping = Instant::now() + self.interval;
+
+            let pong = tokio::time::timeout(self.timeout, self.inner.ping(Ping::opaque()));
+
+            match pong.await {
+                Ok(Ok(_)) => (),
+                Ok(Err(err)) => {
+                    // do not return any error if the connection was normally
+                    // closed by the remote peer
+                    if let Some(err) = err.get_io() {
+                        if err.kind() == io::ErrorKind::BrokenPipe {
+                            return Ok(());
+                        }
+                    }
+
+                    return Err(err.into());
+                }
+                Err(_) => return Err(Error::from_static_msg("connection timeout")),
+            }
+        }
     }
 }
 

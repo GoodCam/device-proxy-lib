@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    io::Write,
+    net::{Ipv4Addr, SocketAddr},
+};
 
 use async_trait::async_trait;
 use gcdevproxy::{
@@ -6,6 +9,7 @@ use gcdevproxy::{
     hyper::{Body, Request, Response},
     ClientHandlerResult, ConnectionInfo, DeviceHandlerResult, Error, ProxyBuilder, RequestHandler,
 };
+use log::LevelFilter;
 
 /// Proxy request handler.
 struct MyRequestHandler;
@@ -53,15 +57,28 @@ impl RequestHandler for MyRequestHandler {
 
 #[tokio::main]
 async fn main() {
+    env_logger::builder()
+        .filter(None, LevelFilter::Debug)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} {} {}",
+                buf.timestamp_millis(),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
+
     let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| String::from("localhost"));
 
     let mut builder = ProxyBuilder::new();
 
     builder
         .hostname(hostname)
-        .http_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8080)))
-        .https_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8443)))
-        .lets_encrypt();
+        .http_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8080)));
+    //.https_bind_address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8443)))
+    //.lets_encrypt();
 
     builder
         .build(MyRequestHandler)
