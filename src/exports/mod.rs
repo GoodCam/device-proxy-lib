@@ -147,6 +147,6 @@ unsafe fn bstr_to_cstr(s: &[u8], buffer: *mut c_char, size: usize) -> usize {
 /// The object must have been created using `Box::into_raw(Box::new(...))`.
 unsafe fn free<T>(object: *mut T) {
     if !object.is_null() {
-        Box::from_raw(object);
+        let _ = Box::from_raw(object);
     }
 }

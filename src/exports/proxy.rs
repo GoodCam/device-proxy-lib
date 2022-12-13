@@ -34,7 +34,7 @@ type ProxyJoinCallback = unsafe extern "C" fn(context: *mut c_void, res: c_int);
 /// Foreign device request handler.
 type RawDeviceHandlerFn = unsafe extern "C" fn(
     context: *mut c_void,
-    authorization: *const BasicAuthorization,
+    authorization: *mut BasicAuthorization,
     result: *mut Sender<Result<DeviceHandlerResult, Error>>,
 );
 
@@ -87,9 +87,11 @@ impl RequestHandler for RawRequestHandler {
             // we need to capture the whole request handler
             let this = this;
 
+            let authorization = Box::into_raw(Box::new(authorization));
+
             let tx = Box::into_raw(Box::new(tx));
 
-            unsafe { (this.handle_device)(this.device_context, &authorization, tx) }
+            unsafe { (this.handle_device)(this.device_context, authorization, tx) }
         });
 
         rx.await
@@ -126,9 +128,11 @@ unsafe impl Sync for RawRequestHandler {}
 /// Default device request handler that will reject all incoming connections.
 unsafe extern "C" fn dummy_device_request_handler(
     _: *mut c_void,
-    _: *const BasicAuthorization,
+    authorization: *mut BasicAuthorization,
     tx: *mut Sender<Result<DeviceHandlerResult, Error>>,
 ) {
+    let _ = Box::from_raw(authorization);
+
     let tx = Box::from_raw(tx);
 
     let _ = tx.send(Ok(DeviceHandlerResult::Unauthorized));
@@ -140,7 +144,7 @@ unsafe extern "C" fn dummy_client_request_handler(
     request: *mut Request<Body>,
     tx: *mut Sender<Result<ClientHandlerResult, Error>>,
 ) {
-    Box::from_raw(request);
+    let _ = Box::from_raw(request);
 
     let tx = Box::from_raw(tx);
 
@@ -803,6 +807,12 @@ unsafe extern "C" fn gcdp__authorization__get_device_key(
     let authorization = &*authorization;
 
     *size = super::str_to_cstr(authorization.password(), buffer, *size);
+}
+
+/// Free the authorization.
+#[no_mangle]
+extern "C" fn gcdp__authorization__free(authorization: *mut BasicAuthorization) {
+    unsafe { super::free(authorization) }
 }
 
 /// Helper function for constructing a socket address from a given C-string and

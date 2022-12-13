@@ -33,7 +33,7 @@ typedef void response_t;
 typedef void header_iter_t;
 
 typedef void device_handler_result_t;
-typedef void device_handler_t(void* context, const authorization_t* authorization, device_handler_result_t* result);
+typedef void device_handler_t(void* context, authorization_t* authorization, device_handler_result_t* result);
 
 typedef void client_handler_result_t;
 typedef void client_handler_t(void* context, request_t* request, client_handler_result_t* result);
@@ -163,6 +163,9 @@ void gcdp__proxy_config__set_tls_identity(proxy_config_t* config, const uint8_t*
  * an arbitrary pointer passed to the handler. It may be NULL. The
  * authorization contains device ID and key. The result contains the decision
  * made by the handler.
+ *
+ * The handler takes ownership of the authorization. It is responsible for
+ * freeing it.
  *
  * Both the handler and the context MUST be thread-safe. It must be safe to
  * share the context between multiple threads and it must be safe to call the
