@@ -32,7 +32,7 @@ impl RequestHandler for MyRequestHandler {
         let is_local_client = request
             .extensions()
             .get::<ConnectionInfo>()
-            .map(|info| info.local_addr().ip().is_loopback())
+            .map(|info| info.remote_addr().ip().is_loopback())
             .unwrap_or(false);
 
         // Here we accept only requests from localhost. In practice there would
@@ -43,7 +43,7 @@ impl RequestHandler for MyRequestHandler {
 
         let device_id = request
             .headers()
-            .get("x-deviceid")
+            .get("x-device")
             .map(|id| id.to_str())
             .and_then(|res| res.ok());
 
