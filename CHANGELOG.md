@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1 (2023-01-09)
+
+* Improve logging in situations when a device is registered but forwarding a
+  client request fails for some reason
+
 ## v0.2.0 (2022-12-13)
 
 * Pass authorization ownership to the device handler (C API)
