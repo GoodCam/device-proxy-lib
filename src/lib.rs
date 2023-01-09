@@ -766,16 +766,25 @@ where
                 Ok(response)
             }
             ClientHandlerResult::Forward(device_id, request) => {
+                info!(
+                    "forwarding client request (request_id: {request_id}, device_id: {device_id})"
+                );
+
                 if let Some(mut device) = self.devices.get(&device_id) {
-                    info!("forwarding client request (request_id: {request_id}, device_id: {device_id})");
+                    match device.send_request(request).await {
+                        Ok(response) => {
+                            let status = response.status();
 
-                    let response = device.send_request(request).await;
+                            info!("forwarding device response (request_id: {request_id}, device_id: {device_id}, status: {status})");
 
-                    let status = response.status();
+                            Ok(response)
+                        }
+                        Err(err) => {
+                            info!("unable to forward client request (request_id: {request_id}, device_id: {device_id}): {err}");
 
-                    info!("forwarding device response (request_id: {request_id}, device_id: {device_id}, status: {status})");
-
-                    Ok(response)
+                            Ok(response::bad_gateway())
+                        }
+                    }
                 } else {
                     info!("unable to forward client request (request_id: {request_id}, device_id: {device_id}): device not connected");
 

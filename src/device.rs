@@ -18,7 +18,7 @@ use h2::{client::SendRequest, Ping, PingPong, RecvStream, SendStream};
 use hyper::{upgrade::Upgraded, Body, Request, Response};
 use uuid::Uuid;
 
-use crate::{response, Error};
+use crate::Error;
 
 /// Device manager.
 #[derive(Clone)]
@@ -183,7 +183,7 @@ pub struct DeviceHandle {
 impl DeviceHandle {
     /// Send a given request to the connected device and return a device
     /// response.
-    pub async fn send_request(&mut self, request: Request<Body>) -> Response<Body> {
+    pub async fn send_request(&mut self, request: Request<Body>) -> Result<Response<Body>, Error> {
         let (request, response_rx) = DeviceRequest::new(request);
 
         self.request_tx.send(request).await.unwrap_or_default();
@@ -273,9 +273,7 @@ impl DeviceRequest {
 
     /// Send the request into a given device channel.
     async fn send(self, channel: SendRequest<Bytes>) {
-        let response = Self::send_internal(self.request, channel)
-            .await
-            .unwrap_or_else(|_| response::bad_gateway());
+        let response = Self::send_internal(self.request, channel).await;
 
         self.response_tx.send(response);
     }
@@ -309,28 +307,28 @@ impl DeviceRequest {
 
 /// Future that will be resolved into a device response.
 struct DeviceResponseRx {
-    inner: oneshot::Receiver<Response<Body>>,
+    inner: oneshot::Receiver<Result<Response<Body>, Error>>,
 }
 
 impl Future for DeviceResponseRx {
-    type Output = Response<Body>;
+    type Output = Result<Response<Body>, Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match ready!(self.inner.poll_unpin(cx)) {
             Ok(res) => Poll::Ready(res),
-            Err(_) => Poll::Ready(response::bad_gateway()),
+            Err(_) => Poll::Ready(Err(Error::from_static_msg("device disconnected"))),
         }
     }
 }
 
 /// Resolver for the device response future.
 struct DeviceResponseTx {
-    inner: oneshot::Sender<Response<Body>>,
+    inner: oneshot::Sender<Result<Response<Body>, Error>>,
 }
 
 impl DeviceResponseTx {
     /// Resolve the device response future.
-    fn send(self, response: Response<Body>) {
+    fn send(self, response: Result<Response<Body>, Error>) {
         self.inner.send(response).unwrap_or_default();
     }
 }
