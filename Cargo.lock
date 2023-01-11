@@ -251,6 +251,7 @@ dependencies = [
  "env_logger",
  "futures",
  "h2",
+ "http",
  "hyper",
  "libc",
  "log",
@@ -261,6 +262,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-native-tls",
+ "tokio-util",
  "uuid",
 ]
 

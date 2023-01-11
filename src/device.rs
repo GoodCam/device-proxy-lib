@@ -14,11 +14,20 @@ use futures::{
     future::{AbortHandle, Abortable, Either},
     ready, FutureExt, SinkExt, Stream, StreamExt,
 };
-use h2::{client::SendRequest, Ping, PingPong, RecvStream, SendStream};
-use hyper::{upgrade::Upgraded, Body, Request, Response};
+use h2::{client::SendRequest, ext::Protocol, Ping, PingPong, RecvStream, SendStream};
+use http::{Method, StatusCode, Version};
+use hyper::{
+    upgrade::{OnUpgrade, Upgraded},
+    Body, Request, Response,
+};
+use tokio::io::AsyncWriteExt;
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::Error;
+use crate::{
+    utils::{HeaderMapExt, RequestExt},
+    Error,
+};
 
 /// Device manager.
 #[derive(Clone)]
@@ -284,24 +293,99 @@ impl DeviceRequest {
         request: Request<Body>,
         channel: SendRequest<Bytes>,
     ) -> Result<Response<Body>, Error> {
-        let (parts, body) = request.into_parts();
+        let version = request.version();
+        let h2_request = request.to_h2_request();
+        let is_connect = h2_request.method() == Method::CONNECT;
+        let is_upgrade = h2_request.extensions().get::<Protocol>().is_some();
 
-        let (response, body_tx) = channel
-            .ready()
-            .await?
-            .send_request(Request::from_parts(parts, ()), false)?;
+        if is_connect && is_upgrade && !channel.is_extended_connect_protocol_enabled() {
+            return Err(Error::from_static_msg(
+                "device does not support connection upgrades",
+            ));
+        }
 
-        tokio::spawn(async move {
-            if let Err(err) = SendBody::new(body, body_tx).await {
-                warn!("unable to send request body: {err}");
+        let (response, request_body_tx) = channel.ready().await?.send_request(h2_request, false)?;
+
+        if is_connect {
+            let (mut parts, response_body) = response.await?.into_parts();
+
+            parts.headers.remove_hop_by_hop_headers();
+            parts.extensions.clear();
+            parts.version = version;
+
+            let response_body_rx = Body::wrap_stream(ReceiveBody::new(response_body));
+
+            if parts.status.is_success() {
+                let upgrade = hyper::upgrade::on(request);
+
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        Self::handle_upgrade(upgrade, request_body_tx, response_body_rx).await
+                    {
+                        warn!("connection upgrade failed: {err}");
+                    }
+                });
+
+                // NOTE: This may lead to unintentional protocol switch in case
+                // when the device treats it as a standard GET request and
+                // responds with HTTP 2xx.
+                if is_upgrade && version < Version::HTTP_2 {
+                    parts.status = StatusCode::SWITCHING_PROTOCOLS;
+                }
+
+                Ok(Response::from_parts(parts, Body::empty()))
+            } else {
+                Ok(Response::from_parts(parts, response_body_rx))
             }
-        });
+        } else {
+            let body = request.into_body();
 
-        let (parts, body) = response.await?.into_parts();
+            tokio::spawn(async move {
+                if let Err(err) = SendBody::new(body, request_body_tx).await {
+                    warn!("unable to send request body: {err}");
+                }
+            });
 
-        let body = Body::wrap_stream(ReceiveBody::new(body));
+            let (mut parts, response_body) = response.await?.into_parts();
 
-        Ok(Response::from_parts(parts, body))
+            parts.headers.remove_hop_by_hop_headers();
+            parts.extensions.clear();
+            parts.version = version;
+
+            let body = Body::wrap_stream(ReceiveBody::new(response_body));
+
+            Ok(Response::from_parts(parts, body))
+        }
+    }
+
+    /// Handle communication after connection upgrade.
+    async fn handle_upgrade(
+        upgrade: OnUpgrade,
+        request_body_tx: SendStream<Bytes>,
+        mut response_body_rx: Body,
+    ) -> Result<(), Error> {
+        let upgraded = upgrade.await.map_err(Error::from_cause)?;
+
+        let (reader, mut writer) = tokio::io::split(upgraded);
+
+        let request_body_rx = ReaderStream::new(reader);
+
+        let device_to_client = async move {
+            while let Some(chunk) = response_body_rx.next().await.transpose()? {
+                writer.write_all(&chunk).await?;
+            }
+
+            writer.shutdown().await.map_err(Error::from)
+        };
+
+        let client_to_device = SendBody::new(request_body_rx, request_body_tx);
+
+        let (d2c_res, c2d_res) = futures::future::join(device_to_client, client_to_device).await;
+
+        d2c_res?;
+        c2d_res?;
+
+        Ok(())
     }
 }
 
@@ -350,6 +434,12 @@ impl Stream for ReceiveBody {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(item) = ready!(self.inner.poll_data(cx)) {
+            if let Err(err) = &item {
+                if err.is_reset() || err.is_go_away() {
+                    return Poll::Ready(None);
+                }
+            }
+
             let data = item.map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
             self.inner
@@ -431,6 +521,10 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         while let Some(mut chunk) = ready!(self.poll_next_chunk(cx))? {
+            if chunk.is_empty() {
+                continue;
+            }
+
             if let Poll::Ready(capacity) = self.poll_capacity(cx, chunk.len()) {
                 let take = capacity?.min(chunk.len());
 
@@ -447,8 +541,17 @@ where
             }
         }
 
-        self.channel.send_data(Bytes::new(), true)?;
-
-        Poll::Ready(Ok(()))
+        if let Err(err) = self.channel.send_data(Bytes::new(), true) {
+            // return Ok if we aren't able to send EOF into a closed stream
+            if err.is_reset() || err.is_go_away() {
+                Poll::Ready(Ok(()))
+            } else if err.reason().is_some() || err.is_io() || err.is_remote() {
+                Poll::Ready(Err(err.into()))
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 }

@@ -85,7 +85,7 @@ use futures::{
     future::AbortHandle,
     FutureExt, StreamExt, TryFutureExt,
 };
-use hyper::{Body, HeaderMap, Method, Request, Response, Server, Version};
+use hyper::{Body, Request, Response, Server};
 use native_tls::Identity;
 use uuid::Uuid;
 
@@ -100,7 +100,7 @@ use self::{
     device::{DeviceConnection, DeviceManager},
     error::{HttpError, Unauthorized},
     tls::{TlsAcceptor, TlsMode},
-    utils::AbortOnDrop,
+    utils::{AbortOnDrop, RequestExt},
 };
 
 pub use self::{binding::ConnectionInfo, error::Error};
@@ -802,80 +802,5 @@ impl<T> Clone for InternalRequestHandler<T> {
             devices: self.devices.clone(),
             handler: self.handler.clone(),
         }
-    }
-}
-
-/// Request extensions/helpers.
-trait RequestExt {
-    /// Check if this is a device request.
-    fn is_device_request(&self) -> bool;
-
-    /// Get ACME challenge token (if this is an AMC challenge request).
-    fn get_acme_challenge_token(&self) -> Option<&str>;
-}
-
-impl RequestExt for Request<Body> {
-    fn is_device_request(&self) -> bool {
-        let uri = self.uri();
-        let headers = self.headers();
-
-        let path = uri.path();
-
-        let is_upgrade = headers
-            .as_ext()
-            .get_all_tokens("connection")
-            .any(|token| token.eq_ignore_ascii_case("upgrade"));
-
-        let is_gc_device_upgrade = headers
-            .as_ext()
-            .get_all_tokens("upgrade")
-            .any(|token| token.eq_ignore_ascii_case("goodcam-device-proxy"));
-
-        self.version() == Version::HTTP_11
-            && self.method() == Method::GET
-            && path == "/"
-            && is_upgrade
-            && is_gc_device_upgrade
-    }
-
-    fn get_acme_challenge_token(&self) -> Option<&str> {
-        let uri = self.uri();
-
-        let path = uri.path();
-
-        path.strip_prefix("/.well-known/acme-challenge/")
-    }
-}
-
-/// Helper for extending the `HeaderMap`.
-trait AsHeaderMapExt {
-    /// Get the extended header map.
-    fn as_ext(&self) -> HeaderMapExt;
-}
-
-impl AsHeaderMapExt for HeaderMap {
-    fn as_ext(&self) -> HeaderMapExt {
-        HeaderMapExt { inner: self }
-    }
-}
-
-/// Private helpers/extensions of the `HeaderMap`.
-struct HeaderMapExt<'a> {
-    inner: &'a HeaderMap,
-}
-
-impl<'a> HeaderMapExt<'a> {
-    ///
-    fn get_all_tokens(&self, name: &str) -> impl Iterator<Item = &str> {
-        // TODO: handle correctly quoted tokens
-
-        self.inner.get_all(name).into_iter().flat_map(|header| {
-            header
-                .to_str()
-                .unwrap_or("")
-                .split(',')
-                .map(|token| token.trim())
-                .filter(|token| !token.is_empty())
-        })
     }
 }
