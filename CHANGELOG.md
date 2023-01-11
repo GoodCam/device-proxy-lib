@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.2 (2023-01-11)
+
+* Do not forward hop-by-hop and non-http2 headers to the device and fix
+  connection upgrades
+
 ## v0.2.1 (2023-01-09)
 
 * Improve logging in situations when a device is registered but forwarding a
