@@ -15,7 +15,7 @@ use futures::{
     ready, FutureExt, SinkExt, Stream, StreamExt,
 };
 use h2::{client::SendRequest, ext::Protocol, Ping, PingPong, RecvStream, SendStream};
-use http::{Method, StatusCode, Version};
+use http::{HeaderValue, Method, StatusCode, Version};
 use hyper::{
     upgrade::{OnUpgrade, Upgraded},
     Body, Request, Response,
@@ -293,12 +293,29 @@ impl DeviceRequest {
         request: Request<Body>,
         channel: SendRequest<Bytes>,
     ) -> Result<Response<Body>, Error> {
+        let method = request.method();
+        let headers = request.headers();
+
+        if method == Method::CONNECT || headers.is_connection_upgrade() {
+            Self::send_connect_request(request, channel).await
+        } else {
+            Self::send_standard_request(request, channel).await
+        }
+    }
+
+    /// Helper function for sending a given HTTP request into a given device
+    /// channel.
+    async fn send_connect_request(
+        request: Request<Body>,
+        channel: SendRequest<Bytes>,
+    ) -> Result<Response<Body>, Error> {
         let version = request.version();
         let h2_request = request.to_h2_request();
-        let is_connect = h2_request.method() == Method::CONNECT;
-        let is_upgrade = h2_request.extensions().get::<Protocol>().is_some();
+        let connect_protocol = h2_request.extensions().get::<Protocol>().cloned();
 
-        if is_connect && is_upgrade && !channel.is_extended_connect_protocol_enabled() {
+        debug_assert!(h2_request.method() == Method::CONNECT);
+
+        if connect_protocol.is_some() && !channel.is_extended_connect_protocol_enabled() {
             return Err(Error::from_static_msg(
                 "device does not support connection upgrades",
             ));
@@ -306,56 +323,78 @@ impl DeviceRequest {
 
         let (response, request_body_tx) = channel.ready().await?.send_request(h2_request, false)?;
 
-        if is_connect {
-            let (mut parts, response_body) = response.await?.into_parts();
+        let (mut parts, response_body) = response.await?.into_parts();
 
-            parts.headers.remove_hop_by_hop_headers();
-            parts.extensions.clear();
-            parts.version = version;
+        parts.version = version;
 
-            let response_body_rx = Body::wrap_stream(ReceiveBody::new(response_body));
+        parts.headers.remove_hop_by_hop_headers();
+        parts.extensions.clear();
 
-            if parts.status.is_success() {
-                let upgrade = hyper::upgrade::on(request);
+        let response_body_rx = Body::wrap_stream(ReceiveBody::new(response_body));
 
-                tokio::spawn(async move {
-                    if let Err(err) =
-                        Self::handle_upgrade(upgrade, request_body_tx, response_body_rx).await
-                    {
-                        warn!("connection upgrade failed: {err}");
-                    }
-                });
-
-                // NOTE: This may lead to unintentional protocol switch in case
-                // when the device treats it as a standard GET request and
-                // responds with HTTP 2xx.
-                if is_upgrade && version < Version::HTTP_2 {
-                    parts.status = StatusCode::SWITCHING_PROTOCOLS;
-                }
-
-                Ok(Response::from_parts(parts, Body::empty()))
-            } else {
-                Ok(Response::from_parts(parts, response_body_rx))
-            }
-        } else {
-            let body = request.into_body();
+        if parts.status.is_success() {
+            let upgrade = hyper::upgrade::on(request);
 
             tokio::spawn(async move {
-                if let Err(err) = SendBody::new(body, request_body_tx).await {
-                    warn!("unable to send request body: {err}");
+                if let Err(err) =
+                    Self::handle_upgrade(upgrade, request_body_tx, response_body_rx).await
+                {
+                    warn!("connection upgrade failed: {err}");
                 }
             });
 
-            let (mut parts, response_body) = response.await?.into_parts();
+            // NOTE: This may lead to unintentional protocol switch in case
+            // when the device treats it as a standard GET request and
+            // responds with HTTP 2xx.
+            if version < Version::HTTP_2 {
+                if let Some(protocol) = connect_protocol {
+                    parts.status = StatusCode::SWITCHING_PROTOCOLS;
 
-            parts.headers.remove_hop_by_hop_headers();
-            parts.extensions.clear();
-            parts.version = version;
+                    let connection = HeaderValue::from_static("upgrade");
+                    let protocol = HeaderValue::from_str(protocol.as_str());
 
-            let body = Body::wrap_stream(ReceiveBody::new(response_body));
+                    parts.headers.insert("connection", connection);
+                    parts.headers.insert("upgrade", protocol.unwrap());
+                }
+            }
 
-            Ok(Response::from_parts(parts, body))
+            Ok(Response::from_parts(parts, Body::empty()))
+        } else {
+            Ok(Response::from_parts(parts, response_body_rx))
         }
+    }
+
+    /// Helper function for sending a given HTTP request into a given device
+    /// channel.
+    async fn send_standard_request(
+        request: Request<Body>,
+        channel: SendRequest<Bytes>,
+    ) -> Result<Response<Body>, Error> {
+        let version = request.version();
+        let h2_request = request.to_h2_request();
+
+        debug_assert!(h2_request.method() != Method::CONNECT);
+
+        let (response, request_body_tx) = channel.ready().await?.send_request(h2_request, false)?;
+
+        let body = request.into_body();
+
+        tokio::spawn(async move {
+            if let Err(err) = SendBody::new(body, request_body_tx).await {
+                warn!("unable to send request body: {err}");
+            }
+        });
+
+        let (mut parts, response_body) = response.await?.into_parts();
+
+        parts.version = version;
+
+        parts.headers.remove_hop_by_hop_headers();
+        parts.extensions.clear();
+
+        let body = Body::wrap_stream(ReceiveBody::new(response_body));
+
+        Ok(Response::from_parts(parts, body))
     }
 
     /// Handle communication after connection upgrade.

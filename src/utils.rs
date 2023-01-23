@@ -35,7 +35,7 @@ impl RequestExt for Request<Body> {
 
         let path = uri.path();
 
-        let is_upgrade = headers.as_ext().is_connection_upgrade();
+        let is_upgrade = headers.is_connection_upgrade();
 
         let is_gc_device_upgrade = headers
             .as_ext()
@@ -106,15 +106,18 @@ impl RequestExt for Request<Body> {
         let extensions = self.extensions();
         let headers = self.headers();
 
-        let old_headers = headers.as_ext();
+        // forward protocol extension (if present)
+        if let Some(protocol) = extensions.get::<Protocol>() {
+            builder = builder.extension(protocol.clone());
+        }
 
         let mut new_headers = headers.clone();
 
         // translate connection upgrade to HTTP2
-        if old_headers.is_connection_upgrade() {
+        if headers.is_connection_upgrade() {
             builder = builder.method(Method::CONNECT);
 
-            let protocol: Protocol = old_headers
+            let protocol: Protocol = headers
                 .get("upgrade")
                 .map(|val| val.to_str())
                 .and_then(|res| res.ok())
@@ -124,11 +127,6 @@ impl RequestExt for Request<Body> {
             builder = builder.extension(protocol);
         } else {
             builder = builder.method(self.method());
-        }
-
-        // forward protocol extension (if present)
-        if let Some(protocol) = extensions.get::<Protocol>() {
-            builder = builder.extension(protocol.clone());
         }
 
         // remove hop-by-hop headers
@@ -150,6 +148,9 @@ pub trait HeaderMapExt {
     /// Get the extended header map.
     fn as_ext(&self) -> ExtHeaderMap;
 
+    /// Check if this is a connection upgrade.
+    fn is_connection_upgrade(&self) -> bool;
+
     /// Remove all hop-by-hop headers.
     fn remove_hop_by_hop_headers(&mut self);
 }
@@ -157,6 +158,12 @@ pub trait HeaderMapExt {
 impl HeaderMapExt for HeaderMap {
     fn as_ext(&self) -> ExtHeaderMap {
         ExtHeaderMap { inner: self }
+    }
+
+    fn is_connection_upgrade(&self) -> bool {
+        self.as_ext()
+            .get_all_tokens("connection")
+            .any(|token| token.eq_ignore_ascii_case("upgrade"))
     }
 
     fn remove_hop_by_hop_headers(&mut self) {
@@ -197,12 +204,6 @@ impl<'a> ExtHeaderMap<'a> {
                 .map(|token| token.trim())
                 .filter(|token| !token.is_empty())
         })
-    }
-
-    /// Check if this is a connection upgrade.
-    pub fn is_connection_upgrade(&self) -> bool {
-        self.get_all_tokens("connection")
-            .any(|token| token.eq_ignore_ascii_case("upgrade"))
     }
 }
 
