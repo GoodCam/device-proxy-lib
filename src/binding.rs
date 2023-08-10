@@ -250,6 +250,7 @@ enum InnerConnection {
     Tcp(TcpStream),
     Tls(TlsStream<TcpStream>),
     PendingTls(PendingTlsConnection),
+    Error,
 }
 
 impl AsyncRead for InnerConnection {
@@ -264,12 +265,20 @@ impl AsyncRead for InnerConnection {
             Self::Tcp(c) => AsyncRead::poll_read(Pin::new(c), cx, buf),
             Self::Tls(c) => AsyncRead::poll_read(Pin::new(c), cx, buf),
             Self::PendingTls(pending) => {
-                let stream = ready!(pending.poll_unpin(cx))?;
+                let (state, err) = match ready!(pending.poll_unpin(cx)) {
+                    Ok(stream) => (Self::Tls(stream), None),
+                    Err(err) => (Self::Error, Some(err)),
+                };
 
-                *this = Self::Tls(stream);
+                *this = state;
 
-                AsyncRead::poll_read(Pin::new(this), cx, buf)
+                if let Some(err) = err {
+                    Poll::Ready(Err(err))
+                } else {
+                    AsyncRead::poll_read(Pin::new(this), cx, buf)
+                }
             }
+            Self::Error => Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
         }
     }
 }
@@ -286,12 +295,20 @@ impl AsyncWrite for InnerConnection {
             Self::Tcp(c) => AsyncWrite::poll_write(Pin::new(c), cx, buf),
             Self::Tls(c) => AsyncWrite::poll_write(Pin::new(c), cx, buf),
             Self::PendingTls(pending) => {
-                let stream = ready!(pending.poll_unpin(cx))?;
+                let (state, err) = match ready!(pending.poll_unpin(cx)) {
+                    Ok(stream) => (Self::Tls(stream), None),
+                    Err(err) => (Self::Error, Some(err)),
+                };
 
-                *this = Self::Tls(stream);
+                *this = state;
 
-                AsyncWrite::poll_write(Pin::new(this), cx, buf)
+                if let Some(err) = err {
+                    Poll::Ready(Err(err))
+                } else {
+                    AsyncWrite::poll_write(Pin::new(this), cx, buf)
+                }
             }
+            Self::Error => Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
         }
     }
 
@@ -302,12 +319,20 @@ impl AsyncWrite for InnerConnection {
             Self::Tcp(c) => AsyncWrite::poll_flush(Pin::new(c), cx),
             Self::Tls(c) => AsyncWrite::poll_flush(Pin::new(c), cx),
             Self::PendingTls(pending) => {
-                let stream = ready!(pending.poll_unpin(cx))?;
+                let (state, err) = match ready!(pending.poll_unpin(cx)) {
+                    Ok(stream) => (Self::Tls(stream), None),
+                    Err(err) => (Self::Error, Some(err)),
+                };
 
-                *this = Self::Tls(stream);
+                *this = state;
 
-                AsyncWrite::poll_flush(Pin::new(this), cx)
+                if let Some(err) = err {
+                    Poll::Ready(Err(err))
+                } else {
+                    AsyncWrite::poll_flush(Pin::new(this), cx)
+                }
             }
+            Self::Error => Poll::Ready(Ok(())),
         }
     }
 
@@ -318,12 +343,20 @@ impl AsyncWrite for InnerConnection {
             Self::Tcp(c) => AsyncWrite::poll_shutdown(Pin::new(c), cx),
             Self::Tls(c) => AsyncWrite::poll_shutdown(Pin::new(c), cx),
             Self::PendingTls(pending) => {
-                let stream = ready!(pending.poll_unpin(cx))?;
+                let (state, err) = match ready!(pending.poll_unpin(cx)) {
+                    Ok(stream) => (Self::Tls(stream), None),
+                    Err(err) => (Self::Error, Some(err)),
+                };
 
-                *this = Self::Tls(stream);
+                *this = state;
 
-                AsyncWrite::poll_shutdown(Pin::new(this), cx)
+                if let Some(err) = err {
+                    Poll::Ready(Err(err))
+                } else {
+                    AsyncWrite::poll_shutdown(Pin::new(this), cx)
+                }
             }
+            Self::Error => Poll::Ready(Ok(())),
         }
     }
 }
