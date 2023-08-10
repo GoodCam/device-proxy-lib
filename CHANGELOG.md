@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 (2023-08-10)
+
+* Fix poll after error
+
 ## v0.2.3 (2023-01-23)
 
 * Add missing Connection and Upgrade headers in responses to HTTP/1.1
