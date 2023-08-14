@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.5 (2023-08-14)
+
+* Improve ACME client logging
+* Disable TLS session cache to lower the memory footprint
+
 ## v0.2.4 (2023-08-10)
 
 * Fix poll after error
