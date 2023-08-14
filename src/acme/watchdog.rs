@@ -120,7 +120,13 @@ impl Watchdog {
 
     /// Get a new TLS certificate.
     async fn get_new_certificate(&self) -> Result<Bytes, Error> {
-        let order = self.account.new_order(&self.hostname).await?;
+        let order = self
+            .account
+            .new_order(&self.hostname)
+            .await
+            .map_err(|err| {
+                Error::from_static_msg_and_cause("unable to create a new certificate order", err)
+            })?;
 
         let challenge = order.challenge();
 
@@ -140,7 +146,13 @@ impl Watchdog {
             .await
             .map_err(|_| Error::from_static_msg("terminating"))??;
 
-        let cert = self.account.close_order(&order, authorized, &csr).await?;
+        let cert = self
+            .account
+            .close_order(&order, authorized, &csr)
+            .await
+            .map_err(|err| {
+                Error::from_static_msg_and_cause("unable to close a certificate order", err)
+            })?;
 
         std::mem::drop(guard);
 

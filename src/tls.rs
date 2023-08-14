@@ -37,9 +37,21 @@ impl TlsMode {
             let account = acme::Client::new()
                 .await?
                 .open_directory(acme::LETS_ENCRYPT_DIRECTORY)
-                .await?
+                .await
+                .map_err(|err| {
+                    Error::from_static_msg_and_cause(
+                        "unable to open the Let's Encrypt directory",
+                        err,
+                    )
+                })?
                 .new_account(None)
-                .await?;
+                .await
+                .map_err(|err| {
+                    Error::from_static_msg_and_cause(
+                        "unable to create a Let's Encrypt account",
+                        err,
+                    )
+                })?;
 
             Ok(Some(account))
         } else {
