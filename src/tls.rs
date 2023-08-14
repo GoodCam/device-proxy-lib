@@ -1,24 +1,55 @@
 use std::{
     future::Future,
     io,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 
-use native_tls::Identity;
 use openssl::{
     ec::{EcGroup, EcKey},
     hash::MessageDigest,
     nid::Nid,
     pkey::{HasPrivate, HasPublic, PKey, PKeyRef, Private},
-    x509::{X509NameBuilder, X509ReqBuilder},
+    ssl::{Ssl, SslAcceptor, SslMethod, SslSessionCacheMode, SslVersion},
+    x509::{X509NameBuilder, X509ReqBuilder, X509},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_native_tls::TlsStream;
+use tokio_openssl::SslStream;
 
 use crate::{
     acme::{self, Account},
     Error,
 };
+
+/// TLS identity.
+#[derive(Clone)]
+pub struct Identity {
+    key: PKey<Private>,
+    cert: X509,
+    chain: Vec<X509>,
+}
+
+impl Identity {
+    /// Create a new TLS identity.
+    pub fn from_pkcs8(chain: &[u8], key: &[u8]) -> Result<Self, Error> {
+        let key = PKey::private_key_from_pem(key)?;
+        let chain = X509::stack_from_pem(chain)?;
+
+        let mut chain = chain.into_iter();
+
+        let cert = chain
+            .next()
+            .ok_or_else(|| Error::from_static_msg("empty certificate chain"))?;
+
+        let res = Self {
+            key,
+            cert,
+            chain: chain.collect(),
+        };
+
+        Ok(res)
+    }
+}
 
 /// TLS mode.
 pub enum TlsMode {
@@ -84,7 +115,7 @@ impl TlsMode {
 /// TLS acceptor.
 #[derive(Clone)]
 pub struct TlsAcceptor {
-    inner: Arc<Mutex<Option<Arc<tokio_native_tls::TlsAcceptor>>>>,
+    inner: Arc<Mutex<Option<SslAcceptor>>>,
 }
 
 impl TlsAcceptor {
@@ -99,22 +130,31 @@ impl TlsAcceptor {
 
     /// Create a new TLS acceptor with a given TLS identity.
     pub fn new(identity: Identity) -> Result<Self, Error> {
-        let acceptor = native_tls::TlsAcceptor::new(identity)?;
+        let res = Self::dummy();
 
-        let res = Self {
-            inner: Arc::new(Mutex::new(Some(Arc::new(acceptor.into())))),
-        };
+        res.set_identity(identity)?;
 
         Ok(res)
     }
 
     /// Set the TLS acceptor identity.
     pub fn set_identity(&self, identity: Identity) -> Result<(), Error> {
-        let acceptor = native_tls::TlsAcceptor::new(identity)?;
+        let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
+
+        builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+        builder.set_min_proto_version(Some(SslVersion::TLS1_2))?;
+        builder.set_private_key(&identity.key)?;
+        builder.set_certificate(&identity.cert)?;
+
+        for cert in identity.chain.iter() {
+            builder.add_extra_chain_cert(cert.to_owned())?;
+        }
+
+        let acceptor = builder.build();
 
         let mut inner = self.inner.lock().unwrap();
 
-        *inner = Some(Arc::new(acceptor.into()));
+        *inner = Some(acceptor);
 
         Ok(())
     }
@@ -127,14 +167,24 @@ impl TlsAcceptor {
         let acceptor = self.inner.lock().unwrap().clone();
 
         async move {
-            acceptor
-                .ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))?
-                .accept(stream)
+            let acceptor =
+                acceptor.ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))?;
+
+            let mut stream = Ssl::new(acceptor.context())
+                .and_then(|ssl| SslStream::new(ssl, stream))
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            SslStream::accept(Pin::new(&mut stream))
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            Ok(stream)
         }
     }
 }
+
+/// Type alias.
+pub type TlsStream<T> = SslStream<T>;
 
 /// Generate a new TLS key.
 pub fn generate_tls_key() -> Result<PKey<Private>, Error> {

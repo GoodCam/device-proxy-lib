@@ -4,7 +4,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use native_tls::Identity;
 use openssl::{
     asn1::Asn1Time,
     pkey::{PKey, Private},
@@ -14,7 +13,7 @@ use openssl::{
 use crate::{
     acme::{Account, ChallengeRegistrations},
     error::Error,
-    tls::{self, TlsAcceptor},
+    tls::{self, Identity, TlsAcceptor},
 };
 
 /// ACME watchdog that will keep the given TLS identity up to date.

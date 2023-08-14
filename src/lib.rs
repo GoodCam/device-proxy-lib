@@ -86,7 +86,6 @@ use futures::{
     FutureExt, StreamExt, TryFutureExt,
 };
 use hyper::{Body, Request, Response, Server};
-use native_tls::Identity;
 use uuid::Uuid;
 
 pub use async_trait;
@@ -99,7 +98,7 @@ use self::{
     binding::{Bindings, Connection},
     device::{DeviceConnection, DeviceManager},
     error::{HttpError, Unauthorized},
-    tls::{TlsAcceptor, TlsMode},
+    tls::{Identity, TlsAcceptor, TlsMode},
     utils::{AbortOnDrop, RequestExt},
 };
 

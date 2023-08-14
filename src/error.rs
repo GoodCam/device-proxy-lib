@@ -104,12 +104,6 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<native_tls::Error> for Error {
-    fn from(err: native_tls::Error) -> Self {
-        Self::from_static_msg_and_cause("TLS", err)
-    }
-}
-
 impl From<openssl::error::ErrorStack> for Error {
     fn from(err: openssl::error::ErrorStack) -> Self {
         Self::from_static_msg_and_cause("OpenSSL", err)

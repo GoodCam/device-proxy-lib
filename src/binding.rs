@@ -12,9 +12,8 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
 };
-use tokio_native_tls::TlsStream;
 
-use crate::tls::TlsAcceptor;
+use crate::tls::{TlsAcceptor, TlsStream};
 
 /// Collection of TCP/TLS bindings.
 pub struct Bindings {
