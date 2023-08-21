@@ -5,6 +5,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::{ready, FutureExt, Stream};
@@ -14,6 +15,8 @@ use tokio::{
 };
 
 use crate::tls::{TlsAcceptor, TlsStream};
+
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Collection of TCP/TLS bindings.
 pub struct Bindings {
@@ -137,7 +140,15 @@ impl Binding {
         let (stream, remote_addr) = ready!(self.listener.poll_accept(cx))?;
 
         let connection = if let Some(acceptor) = self.acceptor.as_ref() {
-            InnerConnection::PendingTls(Box::pin(acceptor.accept(stream)))
+            let accept = acceptor.accept(stream);
+
+            let f = async move {
+                tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, accept)
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timeout"))?
+            };
+
+            InnerConnection::PendingTls(Box::pin(f))
         } else {
             InnerConnection::Tcp(stream)
         };

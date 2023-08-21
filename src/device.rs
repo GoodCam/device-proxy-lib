@@ -121,7 +121,13 @@ pub struct DeviceConnection {
 
 impl DeviceConnection {
     /// Create a new device connection.
-    pub async fn new(connection: Upgraded) -> Result<(Self, DeviceHandle), Error> {
+    pub async fn new<F, E>(connection: F) -> Result<(Self, DeviceHandle), Error>
+    where
+        F: Future<Output = Result<Upgraded, E>>,
+        E: Into<Error>,
+    {
+        let connection = connection.await.map_err(|err| err.into())?;
+
         let (h2, mut connection) = h2::client::handshake(connection).await?;
 
         let ping_pong = connection

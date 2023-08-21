@@ -104,6 +104,8 @@ use self::{
 
 pub use self::{binding::ConnectionInfo, error::Error};
 
+const DEVICE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Possible results of a device connection handler.
 pub enum DeviceHandlerResult {
     /// Accept the corresponding device connection.
@@ -464,6 +466,7 @@ impl ProxyBuilder {
         });
 
         Server::builder(incoming)
+            .http1_header_read_timeout(Duration::from_secs(60))
             .http1_keepalive(true)
             .http2_keep_alive_interval(Some(Duration::from_secs(120)))
             .http2_keep_alive_timeout(Duration::from_secs(20))
@@ -707,9 +710,11 @@ where
         session_id: Uuid,
         request: Request<Body>,
     ) -> Result<(), Error> {
-        let upgraded = hyper::upgrade::on(request).await?;
+        let handshake = DeviceConnection::new(hyper::upgrade::on(request));
 
-        let (connection, handle) = DeviceConnection::new(upgraded).await?;
+        let (connection, handle) = tokio::time::timeout(DEVICE_HANDSHAKE_TIMEOUT, handshake)
+            .await
+            .map_err(|_| Error::from_static_msg("device handshake timeout"))??;
 
         if let Some(old) = self.devices.add(device_id, session_id, handle) {
             old.close();
