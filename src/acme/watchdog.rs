@@ -16,6 +16,8 @@ use crate::{
     tls::{self, Identity, TlsAcceptor},
 };
 
+const RENEW_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// ACME watchdog that will keep the given TLS identity up to date.
 pub struct Watchdog {
     key: Arc<PKey<Private>>,
@@ -94,7 +96,9 @@ impl Watchdog {
 
     /// Renew the TLS certificate.
     async fn renew_certificate(&self) -> Result<Duration, Error> {
-        let chain = self.get_new_certificate().await?;
+        let chain = tokio::time::timeout(RENEW_TIMEOUT, self.get_new_certificate())
+            .await
+            .map_err(|_| Error::from_static_msg("renew timeout"))??;
 
         let identity = Identity::from_pkcs8(&chain, &self.key_pem)?;
 
