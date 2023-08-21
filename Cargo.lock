@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "gcdevproxy"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.13.1",

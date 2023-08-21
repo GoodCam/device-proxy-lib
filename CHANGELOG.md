@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.6 (2023-08-21)
+
+* Add certificate renew timeout
+* Mitigate possible slowloris attacks
+
 ## v0.2.5 (2023-08-14)
 
 * Improve ACME client logging
