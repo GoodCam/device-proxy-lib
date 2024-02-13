@@ -17,7 +17,7 @@ use self::{
 use crate::Error;
 
 pub use self::{
-    challenge::{Challenge, ChallengeAuthorized, ChallengeRegistrations},
+    challenge::{Challenge, ChallengeRegistrations},
     client::Client,
     watchdog::Watchdog,
 };

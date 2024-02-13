@@ -85,6 +85,7 @@ impl RequestHandler for RawRequestHandler {
 
         tokio::task::spawn_blocking(move || {
             // we need to capture the whole request handler
+            #[allow(clippy::redundant_locals)]
             let this = this;
 
             let authorization = Box::into_raw(Box::new(authorization));
@@ -108,6 +109,7 @@ impl RequestHandler for RawRequestHandler {
 
         tokio::task::spawn_blocking(move || {
             // we need to capture the whole request handler
+            #[allow(clippy::redundant_locals)]
             let this = this;
 
             let request = Box::into_raw(Box::new(request));
