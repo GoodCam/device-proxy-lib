@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.0 (2024-02-14)
+
+* Switch to the latest Hyper and update all dependencies
+
 ## v0.2.6 (2023-08-21)
 
 * Add certificate renew timeout
