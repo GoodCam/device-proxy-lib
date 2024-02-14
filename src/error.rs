@@ -4,7 +4,9 @@ use std::{
     io,
 };
 
-use hyper::{Body, Response};
+use hyper::Response;
+
+use crate::Body;
 
 /// Error type.
 #[derive(Debug)]

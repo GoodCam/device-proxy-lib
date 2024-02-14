@@ -18,15 +18,16 @@ use h2::{client::SendRequest, ext::Protocol, Ping, PingPong, RecvStream, SendStr
 use http::{HeaderValue, Method, StatusCode, Version};
 use hyper::{
     upgrade::{OnUpgrade, Upgraded},
-    Body, Request, Response,
+    Request, Response,
 };
+use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::{
     utils::{HeaderMapExt, RequestExt},
-    Error,
+    Body, Error,
 };
 
 /// Device manager.
@@ -126,7 +127,10 @@ impl DeviceConnection {
         F: Future<Output = Result<Upgraded, E>>,
         E: Into<Error>,
     {
-        let connection = connection.await.map_err(|err| err.into())?;
+        let connection = connection
+            .await
+            .map(TokioIo::new)
+            .map_err(|err| err.into())?;
 
         let (h2, mut connection) = h2::client::handshake(connection).await?;
 
@@ -336,7 +340,7 @@ impl DeviceRequest {
         parts.headers.remove_hop_by_hop_headers();
         parts.extensions.clear();
 
-        let response_body_rx = Body::wrap_stream(ReceiveBody::new(response_body));
+        let response_body_rx = Body::from_stream(ReceiveBody::new(response_body));
 
         if parts.status.is_success() {
             let upgrade = hyper::upgrade::on(request);
@@ -398,7 +402,7 @@ impl DeviceRequest {
         parts.headers.remove_hop_by_hop_headers();
         parts.extensions.clear();
 
-        let body = Body::wrap_stream(ReceiveBody::new(response_body));
+        let body = Body::from_stream(ReceiveBody::new(response_body));
 
         Ok(Response::from_parts(parts, body))
     }
@@ -409,7 +413,7 @@ impl DeviceRequest {
         request_body_tx: SendStream<Bytes>,
         mut response_body_rx: Body,
     ) -> Result<(), Error> {
-        let upgraded = upgrade.await.map_err(Error::from_cause)?;
+        let upgraded = upgrade.await.map(TokioIo::new).map_err(Error::from_cause)?;
 
         let (reader, mut writer) = tokio::io::split(upgraded);
 

@@ -58,9 +58,11 @@ extern crate log;
 
 mod acme;
 mod binding;
+mod body;
 mod device;
 mod error;
 mod response;
+mod shutdown;
 mod tls;
 mod utils;
 
@@ -82,10 +84,11 @@ use std::{
 
 use futures::{
     channel::mpsc::{self, UnboundedSender},
-    future::AbortHandle,
-    FutureExt, StreamExt, TryFutureExt,
+    future::{AbortHandle, Either},
+    FutureExt, StreamExt,
 };
-use hyper::{Body, Request, Response, Server};
+use hyper::{body::Incoming, Request, Response};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use uuid::Uuid;
 
 pub use async_trait;
@@ -95,14 +98,15 @@ pub use hyper::http;
 use self::{
     acme::{ChallengeRegistrations, Watchdog},
     auth::BasicAuthorization,
-    binding::{Bindings, Connection},
+    binding::Bindings,
     device::{DeviceConnection, DeviceManager},
     error::{HttpError, Unauthorized},
+    shutdown::{GracefulShutdown, UpgradeableConnectionExt},
     tls::{Identity, TlsAcceptor, TlsMode},
     utils::{AbortOnDrop, RequestExt},
 };
 
-pub use self::{binding::ConnectionInfo, error::Error};
+pub use self::{binding::ConnectionInfo, body::Body, error::Error};
 
 const DEVICE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -443,38 +447,71 @@ impl ProxyBuilder {
         T: RequestHandler + Send + Sync + 'static,
         F: Future,
     {
-        let incoming = hyper::server::accept::poll_fn(move |cx| bindings.poll_next_unpin(cx));
+        let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
 
-        let make_service = hyper::service::make_service_fn(move |connection: &Connection| {
-            let connection_info = connection.info();
+        builder
+            .http1()
+            .header_read_timeout(Duration::from_secs(60))
+            .keep_alive(true);
 
-            let handler = handler.clone();
+        builder
+            .http2()
+            .keep_alive_interval(Some(Duration::from_secs(120)))
+            .keep_alive_timeout(Duration::from_secs(20));
 
-            let service = hyper::service::service_fn(move |mut request| {
-                request.extensions_mut().insert(connection_info);
+        async move {
+            let connections = GracefulShutdown::new();
 
+            futures::pin_mut!(shutdown);
+
+            loop {
+                let next = bindings.next();
+
+                let connection = match futures::future::select(&mut shutdown, next).await {
+                    Either::Left((_, _)) => break,
+                    Either::Right((res, _)) => match res.transpose() {
+                        Ok(Some(c)) => c,
+                        Ok(None) => return Err(Error::from_static_msg("server socket(s) closed")),
+                        Err(err) => return Err(err.into()),
+                    },
+                };
+
+                let shutdown_registration = connections.register_task();
+                let info = connection.info();
                 let handler = handler.clone();
+                let builder = builder.clone();
 
-                async move {
-                    let response = handler.handle_request(request).await;
+                let io = TokioIo::new(connection);
 
-                    Ok(response) as Result<_, hyper::Error>
-                }
-            });
+                let service = hyper::service::service_fn(move |mut request| {
+                    let extensions = request.extensions_mut();
 
-            futures::future::ok::<_, hyper::Error>(service)
-        });
+                    extensions.insert(info);
 
-        Server::builder(incoming)
-            .http1_header_read_timeout(Duration::from_secs(60))
-            .http1_keepalive(true)
-            .http2_keep_alive_interval(Some(Duration::from_secs(120)))
-            .http2_keep_alive_timeout(Duration::from_secs(20))
-            .serve(make_service)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown.await;
-            })
-            .map_err(Error::from)
+                    let handler = handler.clone();
+
+                    async move {
+                        let response = handler.handle_request(request).await;
+
+                        Ok(response) as Result<_, hyper::Error>
+                    }
+                });
+
+                tokio::spawn(async move {
+                    let serve = builder
+                        .serve_connection_with_upgrades(io, service)
+                        .with_graceful_shutdown(shutdown_registration);
+
+                    if let Err(err) = serve.await {
+                        debug!("connection error: {err}");
+                    }
+                });
+            }
+
+            connections.shutdown().await;
+
+            Ok(())
+        }
     }
 
     /// Start the proxy service.
@@ -594,8 +631,8 @@ where
     T: RequestHandler + Send + Sync + 'static,
 {
     /// Handle a given request.
-    async fn handle_request(&self, request: Request<Body>) -> Response<Body> {
-        self.handle_request_inner(request)
+    async fn handle_request(&self, request: Request<Incoming>) -> Response<Body> {
+        self.handle_request_inner(request.map(Body::from))
             .await
             .unwrap_or_else(|err| {
                 if let Some(response) = err.to_response() {

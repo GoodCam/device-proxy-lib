@@ -1,6 +1,8 @@
 //! Helpers for constructing HTTP responses.
 
-use hyper::{Body, Response};
+use hyper::Response;
+
+use crate::Body;
 
 /// Create a new HTTP response with a given status code and body.
 fn response_with_body<T>(status: u16, body: T) -> Response<Body>

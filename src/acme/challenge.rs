@@ -10,7 +10,9 @@ use futures::{
     channel::oneshot::{self, Sender},
     ready, FutureExt,
 };
-use hyper::{Body, Response};
+use hyper::Response;
+
+use crate::Body;
 
 /// Collection of ACME challenge registrations.
 #[derive(Clone)]
@@ -85,7 +87,7 @@ impl ChallengeRegistration {
         };
 
         Response::builder()
-            .extension(guard)
+            .extension(Arc::new(guard))
             .status(200)
             .header("Content-Type", "application/octet-stream")
             .body(Body::from(self.key_authorization.clone()))

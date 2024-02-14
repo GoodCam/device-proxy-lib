@@ -1,7 +1,10 @@
 use std::os::raw::{c_char, c_int};
 
-use hyper::{http::header::HeaderValue, Body, Response};
+use bytes::Bytes;
+use hyper::{http::header::HeaderValue, Response};
 use libc::EINVAL;
+
+use crate::Body;
 
 /// Create a new HTTP response with a given status code.
 #[no_mangle]
@@ -77,7 +80,7 @@ unsafe extern "C" fn gcdp__response__set_body(
 
     let body = std::slice::from_raw_parts(body, size);
 
-    *response.body_mut() = Body::from(body);
+    *response.body_mut() = Body::from(Bytes::copy_from_slice(body));
 }
 
 /// Free the response.

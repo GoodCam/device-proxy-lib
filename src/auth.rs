@@ -6,6 +6,8 @@ use std::{
     str::FromStr,
 };
 
+use base64::prelude::{Engine, BASE64_STANDARD};
+
 /// Invalid authorization header.
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidAuthorizationHeader;
@@ -61,7 +63,7 @@ impl FromStr for BasicAuthorization {
             return Err(InvalidAuthorizationHeader);
         }
 
-        let credentials = base64::decode(rest.trim())
+        let credentials = Engine::decode(&BASE64_STANDARD, rest.trim())
             .ok()
             .map(String::from_utf8)
             .and_then(|res| res.ok())

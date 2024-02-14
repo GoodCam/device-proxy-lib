@@ -8,7 +8,7 @@ use std::{
 use futures::FutureExt;
 use h2::ext::Protocol;
 use http::uri::{Authority, Scheme, Uri};
-use hyper::{Body, HeaderMap, Method, Request, Version};
+use hyper::{HeaderMap, Method, Request, Version};
 use tokio::task::{JoinError, JoinHandle};
 
 use crate::binding::ConnectionInfo;
@@ -28,7 +28,7 @@ pub trait RequestExt {
     fn to_h2_request(&self) -> Request<()>;
 }
 
-impl RequestExt for Request<Body> {
+impl<T> RequestExt for Request<T> {
     fn is_device_request(&self) -> bool {
         let uri = self.uri();
         let headers = self.headers();

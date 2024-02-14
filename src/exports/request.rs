@@ -6,9 +6,11 @@ use std::{
 
 use hyper::{
     http::header::{HeaderValue, Iter as HeaderIter},
-    Body, Method, Request,
+    Method, Request,
 };
 use libc::EINVAL;
+
+use crate::Body;
 
 /// Header field iterator.
 type RawHeaderIter<'a> = Peekable<HeaderIter<'a, HeaderValue>>;

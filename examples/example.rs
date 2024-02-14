@@ -6,8 +6,9 @@ use std::{
 use async_trait::async_trait;
 use gcdevproxy::{
     auth::BasicAuthorization,
-    hyper::{Body, Request, Response},
-    ClientHandlerResult, ConnectionInfo, DeviceHandlerResult, Error, ProxyBuilder, RequestHandler,
+    hyper::{Request, Response},
+    Body, ClientHandlerResult, ConnectionInfo, DeviceHandlerResult, Error, ProxyBuilder,
+    RequestHandler,
 };
 use log::LevelFilter;
 

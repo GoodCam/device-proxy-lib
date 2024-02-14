@@ -13,7 +13,7 @@ use futures::{
     channel::oneshot::{self, Sender},
     future::Either,
 };
-use hyper::{Body, Request, Response};
+use hyper::{Request, Response};
 use libc::{EINVAL, EIO};
 use tokio::{
     runtime::{self, Runtime},
@@ -21,8 +21,8 @@ use tokio::{
 };
 
 use crate::{
-    auth::BasicAuthorization, exports::RawContextWrapper, ClientHandlerResult, DeviceHandlerResult,
-    Error, ProxyBuilder, ProxyHandle, RequestHandler,
+    auth::BasicAuthorization, exports::RawContextWrapper, Body, ClientHandlerResult,
+    DeviceHandlerResult, Error, ProxyBuilder, ProxyHandle, RequestHandler,
 };
 
 /// Foreign callback for asynchronous proxy construction.

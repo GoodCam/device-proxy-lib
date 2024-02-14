@@ -21,19 +21,25 @@ c-api = ["libc", "log/std"]
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.13"
+base64 = "0.21"
 bytes = "1"
 futures = "0.3"
-h2 = "0.3"
-http = "0.2"
+h2 = "0.4"
+http = "1"
+http-body-util = "0.1"
 log = "0.4"
 openssl = "0.10"
+pin-project-lite = "0.2"
 reqwest = "0.11"
 tokio-openssl = "0.6"
 
 [dependencies.hyper]
-version = "0.14"
-features = ["http1", "http2", "server", "stream", "runtime"]
+version = "1"
+features = ["http1", "http2", "server"]
+
+[dependencies.hyper-util]
+version = "0.1"
+features = ["server-auto", "tokio"]
 
 [dependencies.libc]
 version = "0.2"
@@ -60,7 +66,7 @@ version = "1"
 features = ["v4"]
 
 [dev-dependencies]
-env_logger = "0.9"
+env_logger = "0.11"
 
 [dev-dependencies.tokio]
 version = "1"
