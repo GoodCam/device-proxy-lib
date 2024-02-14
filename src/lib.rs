@@ -88,7 +88,7 @@ use futures::{
     FutureExt, StreamExt,
 };
 use hyper::{body::Incoming, Request, Response};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use uuid::Uuid;
 
 pub use async_trait;
@@ -447,17 +447,22 @@ impl ProxyBuilder {
         T: RequestHandler + Send + Sync + 'static,
         F: Future,
     {
-        let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+        let executor = TokioExecutor::new();
+        let timer = TokioTimer::new();
+
+        let mut builder = hyper_util::server::conn::auto::Builder::new(executor);
 
         builder
             .http1()
             .header_read_timeout(Duration::from_secs(60))
-            .keep_alive(true);
+            .keep_alive(true)
+            .timer(timer.clone());
 
         builder
             .http2()
             .keep_alive_interval(Some(Duration::from_secs(120)))
-            .keep_alive_timeout(Duration::from_secs(20));
+            .keep_alive_timeout(Duration::from_secs(20))
+            .timer(timer);
 
         async move {
             let connections = GracefulShutdown::new();
